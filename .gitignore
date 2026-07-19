@@ -1,0 +1,20 @@
+# Fichiers système Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Backend (Python)
+backend/venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/.env
+
+# Frontend (Node / React)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# Configuration IDE (VS Code)
+.vscode/
+.idea/
