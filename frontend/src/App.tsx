@@ -3,6 +3,7 @@ import { LayoutDashboard, FileText, History, Settings, Sun, Moon } from 'lucide-
 import MainDashboard from './views/MainDashboard';
 import BatchAnalysis from './views/BatchAnalysis';
 import HistoryView from './views/HistoryView';
+import AdminConfig from './views/AdminConfig';
 
 export default function App() {
   const { activeTab, setActiveTab, darkMode, toggleDarkMode } = useAppStore();
@@ -84,14 +85,7 @@ export default function App() {
           {activeTab === 'dashboard' && <MainDashboard />}
           {activeTab === 'files' && <BatchAnalysis />}
           {activeTab === 'history' && <HistoryView />}
-          {activeTab === 'admin' && (
-            <div className="text-center py-20 text-slate-400">
-              <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-2">Module Configuration Admin</h2>
-              <p className="text-sm max-w-md mx-auto">
-                Ce panneau permettra prochainement de superviser les métriques système en temps réel et de modifier à la volée le modèle NLP actif (RoBERTa, CamemBERT, BART).
-              </p>
-            </div>
-          )}
+          {activeTab === 'admin' && <AdminConfig />}
         </div>
       </main>
 
