@@ -1,5 +1,6 @@
 import { useState, ChangeEvent } from 'react';
-import { UploadCloud, FileText, CheckCircle, Loader2, Download, AlertCircle, RefreshCw } from 'lucide-react';
+import { UploadCloud, FileText, CheckCircle, Loader2, Download, AlertCircle, RefreshCw, Layers, Sparkles, PieChart as PieIcon } from 'lucide-react';
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 
 interface BatchItem {
   source_text: string;
@@ -59,7 +60,7 @@ export default function BatchAnalysis() {
 
   const exportToCSV = () => {
     if (!batchData) return;
-    const headers = "Texte,Sentiment,Score,Entités Détectées\n";
+    const headers = "Texte,Sentiment,Score,Entites\n";
     const rows = batchData.results
       .map(r => `"${r.source_text.replace(/"/g, '""')}",${r.sentiment},${r.score}%,${r.entities_count}`)
       .join("\n");
@@ -74,49 +75,61 @@ export default function BatchAnalysis() {
     document.body.removeChild(link);
   };
 
+  // Calcul des données pour le Donut Chart du Fichier
+  const positiveCount = batchData?.results.filter(r => r.sentiment === 'Positif').length || 0;
+  const negativeCount = batchData?.results.filter(r => r.sentiment === 'Négatif').length || 0;
+  const neutralCount = batchData?.results.filter(r => r.sentiment === 'Neutre').length || 0;
+
+  const chartData = [
+    { name: 'Positif', value: positiveCount || 1 },
+    { name: 'Négatif', value: negativeCount || 1 },
+    { name: 'Neutre', value: neutralCount || 0 },
+  ];
+
+  const CHART_COLORS = ['#10B981', '#F43F5E', '#F59E0B'];
+
   return (
-    <div className="space-y-8">
-      {/* En-tête */}
-      <div className="flex flex-col gap-1 border-b border-slate-200 pb-5 dark:border-slate-800/80">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-          Analyse en Masse (Batch Processing)
-        </h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Importez vos fichiers de données (CSV, TXT) pour lancer un traitement automatique par lot.
-        </p>
+    <div className="space-y-8 pb-12">
+      {/* Banner WAAW */}
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-8 text-white shadow-xl">
+        <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl" />
+        <div className="relative z-10 max-w-xl space-y-2">
+          <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/20 px-3.5 py-1 text-xs font-semibold text-indigo-300 border border-indigo-400/20">
+            <Layers size={14} className="text-indigo-400" />
+            <span>Traitement par Lot Haute Vélocité</span>
+          </div>
+          <h1 className="text-3xl font-black tracking-tight text-white">Analyse de Fichiers en Masse</h1>
+          <p className="text-xs text-indigo-200/80 leading-relaxed">
+            Téléversez vos fichiers CSV ou TXT. Le moteur extrait automatiquement les sentiments et entités sur l'ensemble de votre corpus de données.
+          </p>
+        </div>
       </div>
 
-      {/* Zone de Drag & Drop / Upload */}
-      <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-400">
-          <UploadCloud size={28} />
+      {/* Zone de Drag & Drop */}
+      <div className="group relative rounded-3xl border-2 border-dashed border-indigo-200 dark:border-indigo-900/40 bg-white/60 dark:bg-slate-900/60 p-8 text-center backdrop-blur-xl transition-all hover:border-indigo-500 dark:hover:border-indigo-400">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/80 dark:text-indigo-400 shadow-md">
+          <UploadCloud size={32} />
         </div>
         
         <div className="mt-4">
-          <label htmlFor="file-upload" className="cursor-pointer font-semibold text-indigo-600 hover:text-indigo-500 dark:text-indigo-400">
-            <span>Sélectionnez un fichier</span>
-            <input
-              id="file-upload"
-              type="file"
-              accept=".csv,.txt"
-              className="sr-only"
-              onChange={handleFileChange}
-            />
+          <label htmlFor="file-upload" className="cursor-pointer text-sm font-bold text-indigo-600 hover:text-indigo-500 dark:text-indigo-400">
+            <span>Parcourir vos fichiers</span>
+            <input id="file-upload" type="file" accept=".csv,.txt" className="sr-only" onChange={handleFileChange} />
           </label>
-          <span className="text-sm text-slate-500 dark:text-slate-400"> ou glissez-déposez ici</span>
+          <span className="text-sm text-slate-500"> ou glissez-déposez le document ici</span>
         </div>
-        <p className="mt-1 text-xs text-slate-400">Formats supportés : CSV, TXT (Jusqu'à 10 Mo)</p>
+        <p className="mt-1 text-xs text-slate-400">Formats acceptés : CSV, TXT (Encodage UTF-8)</p>
 
         {selectedFile && (
-          <div className="mt-6 inline-flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-2 border border-slate-200 dark:bg-slate-950 dark:border-slate-800">
+          <div className="mt-6 inline-flex items-center gap-3 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/60 px-5 py-2.5 border border-indigo-200/50 dark:border-indigo-800/50">
             <FileText size={18} className="text-indigo-600 dark:text-indigo-400" />
-            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{selectedFile.name}</span>
-            <span className="text-xs text-slate-400">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{selectedFile.name}</span>
+            <span className="text-[10px] font-semibold text-indigo-500">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
           </div>
         )}
 
         {errorMessage && (
-          <div className="mt-4 flex items-center justify-center gap-2 text-xs font-semibold text-rose-600 dark:text-rose-400">
+          <div className="mt-4 flex items-center justify-center gap-2 text-xs font-bold text-rose-500">
             <AlertCircle size={14} />
             <span>{errorMessage}</span>
           </div>
@@ -126,79 +139,108 @@ export default function BatchAnalysis() {
           <button
             onClick={handleProcessBatch}
             disabled={!selectedFile || isUploading}
-            className="flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-indigo-500/20 hover:bg-indigo-700 disabled:opacity-50 transition-all cursor-pointer"
+            className="flex items-center gap-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-7 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-500/20 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-50 transition-all cursor-pointer"
           >
             {isUploading ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
-                <span>Traitement du lot en cours...</span>
+                <span>Exécution de l'Audit par Lot...</span>
               </>
             ) : (
               <>
                 <RefreshCw size={16} />
-                <span>Exécuter le traitement par lot</span>
+                <span>Lancer le Traitement Multi-Lignes</span>
               </>
             )}
           </button>
         </div>
       </div>
 
-      {/* Affichage des Résultats du Batch */}
+      {/* Graphique + Tableau des Résultats */}
       {batchData && (
         <div className="space-y-6 animate-fadeIn">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <CheckCircle className="text-emerald-500" size={20} />
-              <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                Rapport de traitement : {batchData.filename} ({batchData.total_processed} lignes)
-              </h2>
-            </div>
-            <button
-              onClick={exportToCSV}
-              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800 transition-colors"
-            >
-              <Download size={16} />
-              <span>Exporter le Rapport (CSV)</span>
-            </button>
-          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Visualisation Synthétique Recharts */}
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                  <PieIcon size={16} className="text-indigo-500" />
+                  Profil Global du Fichier
+                </h3>
+                <Sparkles size={14} className="text-indigo-400" />
+              </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50/70 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800/60 dark:bg-slate-900/50 dark:text-slate-400">
-                    <th className="px-6 py-4">Texte Brut</th>
-                    <th className="px-6 py-4">Sentiment</th>
-                    <th className="px-6 py-4">Confiance</th>
-                    <th className="px-6 py-4">Entités</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-sm text-slate-700 dark:divide-slate-800/60 dark:text-slate-300">
-                  {batchData.results.map((item, index) => (
-                    <tr key={index} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors">
-                      <td className="px-6 py-4 max-w-md truncate font-medium text-slate-900 dark:text-white">
-                        {item.source_text}
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                          item.sentiment === 'Positif' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400' :
-                          item.sentiment === 'Négatif' ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400' :
-                          'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
-                        }`}>
-                          {item.sentiment}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4 font-semibold text-slate-700 dark:text-slate-300">
-                        {item.score}%
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-slate-500 dark:text-slate-400">
-                        {item.entities_count} détectée(s)
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="h-48 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={chartData} cx="50%" cy="50%" innerRadius={45} outerRadius={65} paddingAngle={4} dataKey="value">
+                      {chartData.map((_, index) => (
+                        <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: '#0F172A', borderRadius: '12px', color: '#FFF' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="flex justify-center gap-4 text-[11px] font-semibold">
+                <span className="text-emerald-500">{positiveCount} Positif(s)</span>
+                <span className="text-rose-500">{negativeCount} Négatif(s)</span>
+                <span className="text-amber-500">{neutralCount} Neutre(s)</span>
+              </div>
             </div>
+
+            {/* Tableau Résultat WAAW */}
+            <div className="lg:col-span-2 rounded-3xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="text-emerald-500" size={18} />
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    {batchData.filename} — {batchData.total_processed} lignes analysées
+                  </h3>
+                </div>
+                <button
+                  onClick={exportToCSV}
+                  className="flex items-center gap-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 px-3.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors"
+                >
+                  <Download size={14} />
+                  <span>Export CSV</span>
+                </button>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-100 bg-slate-50/50 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:border-slate-800 dark:bg-slate-950/40">
+                      <th className="px-4 py-3">Extrait</th>
+                      <th className="px-4 py-3">Sentiment</th>
+                      <th className="px-4 py-3">Score</th>
+                      <th className="px-4 py-3">Entités</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs text-slate-700 dark:text-slate-300">
+                    {batchData.results.map((item, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                        <td className="px-4 py-3 max-w-xs truncate font-medium text-slate-900 dark:text-white">{item.source_text}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            item.sentiment === 'Positif' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400' :
+                            item.sentiment === 'Négatif' ? 'bg-rose-50 text-rose-600 dark:bg-rose-950/60 dark:text-rose-400' :
+                            'bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400'
+                          }`}>
+                            {item.sentiment}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-semibold">{item.score}%</td>
+                        <td className="px-4 py-3 text-slate-400">{item.entities_count} détectée(s)</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
           </div>
         </div>
       )}
