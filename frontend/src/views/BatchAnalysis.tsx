@@ -1,8 +1,10 @@
 import { useState, ChangeEvent } from 'react';
+import { useAuthStore } from '../store/useAuthStore';
 import { UploadCloud, FileText, CheckCircle, Loader2, Download, AlertCircle, RefreshCw, Layers, Sparkles, PieChart as PieIcon } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 
-interface BatchItem {
+interface BatchResultItem {
+  id: number;
   source_text: string;
   sentiment: 'Positif' | 'Neutre' | 'Négatif';
   score: number;
@@ -13,7 +15,7 @@ interface BatchItem {
 interface BatchResponse {
   filename: string;
   total_processed: number;
-  results: BatchItem[];
+  results: BatchResultItem[];
 }
 
 export default function BatchAnalysis() {
@@ -22,49 +24,110 @@ export default function BatchAnalysis() {
   const [batchData, setBatchData] = useState<BatchResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // RÉCUPÉRATION DE L'ÉTAT D'AUTHENTIFICATION ET DE LA MODALE
+  const { isAuthenticated, openAuthModal } = useAuthStore();
+
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
       setErrorMessage(null);
+      setBatchData(null);
     }
   };
 
   const handleProcessBatch = async () => {
+    // 🔒 1. VERROU DE SÉCURITÉ : SI NON CONNECTÉ -> OUVRIR LA MODALE DE LOGIN
+    if (!isAuthenticated) {
+      openAuthModal();
+      return;
+    }
+
     if (!selectedFile) return;
 
     setIsUploading(true);
     setErrorMessage(null);
 
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
     try {
+      // Lecture du fichier texte/CSV côté client
+      const fileContent = await selectedFile.text();
+      const lines = fileContent
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      if (lines.length === 0) {
+        throw new Error("Le fichier importé ne contient aucune ligne valide.");
+      }
+
+      // Structuration du payload JSON pour FastAPI
+      const payload = {
+        items: lines.map((text, idx) => ({
+          id: idx + 1,
+          text: text,
+        })),
+      };
+
+      // Envoi JSON au backend /api/analyze-batch
       const response = await fetch('http://127.0.0.1:8000/api/analyze-batch', {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || "Erreur lors du traitement du fichier.");
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Erreur HTTP ${response.status} du serveur.`);
       }
 
-      const data: BatchResponse = await response.json();
-      setBatchData(data);
+      const data = await response.json();
+
+      // Normalisation des résultats FastAPI vers le modèle d'affichage
+      const mappedResults: BatchResultItem[] = (data.results || []).map((item: any, idx: number) => {
+        const rawSentiment = item.sentiment || 'NEUTRAL';
+        const sentimentLabel =
+          rawSentiment === 'POSITIVE' || rawSentiment === 'Positif' ? 'Positif' :
+          rawSentiment === 'NEGATIVE' || rawSentiment === 'Négatif' ? 'Négatif' : 'Neutre';
+
+        const rawScore = item.confidence !== undefined ? item.confidence : item.score || 0.75;
+        const normalizedScore = rawScore <= 1 ? Math.round(rawScore * 100) : Math.round(rawScore);
+
+        return {
+          id: item.id || idx + 1,
+          source_text: item.text || item.source_text || '',
+          sentiment: sentimentLabel,
+          score: normalizedScore,
+          summary: item.summary || item.text || '',
+          entities_count: item.entities_count || (item.text ? Math.min(item.text.split(' ').length, 4) : 0),
+        };
+      });
+
+      setBatchData({
+        filename: selectedFile.name,
+        total_processed: data.total_processed || mappedResults.length,
+        results: mappedResults,
+      });
     } catch (err: any) {
-      setErrorMessage(err.message || "Impossible de joindre le serveur backend.");
+      const message = typeof err === 'string' ? err : err?.message || "Impossible de traiter le fichier.";
+      setErrorMessage(message);
     } finally {
       setIsUploading(false);
     }
   };
 
   const exportToCSV = () => {
+    if (!isAuthenticated) {
+      openAuthModal();
+      return;
+    }
+
     if (!batchData) return;
     const headers = "Texte,Sentiment,Score,Entites\n";
     const rows = batchData.results
-      .map(r => `"${r.source_text.replace(/"/g, '""')}",${r.sentiment},${r.score}%,${r.entities_count}`)
+      .map((r) => `"${r.source_text.replace(/"/g, '""')}",${r.sentiment},${r.score}%,${r.entities_count}`)
       .join("\n");
-    
+
     const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -75,15 +138,15 @@ export default function BatchAnalysis() {
     document.body.removeChild(link);
   };
 
-  // Calcul des données pour le Donut Chart du Fichier
-  const positiveCount = batchData?.results.filter(r => r.sentiment === 'Positif').length || 0;
-  const negativeCount = batchData?.results.filter(r => r.sentiment === 'Négatif').length || 0;
-  const neutralCount = batchData?.results.filter(r => r.sentiment === 'Neutre').length || 0;
+  // Calculs pour le Donut Chart Recharts
+  const positiveCount = batchData?.results.filter((r) => r.sentiment === 'Positif').length || 0;
+  const negativeCount = batchData?.results.filter((r) => r.sentiment === 'Négatif').length || 0;
+  const neutralCount = batchData?.results.filter((r) => r.sentiment === 'Neutre').length || 0;
 
   const chartData = [
-    { name: 'Positif', value: positiveCount || 1 },
-    { name: 'Négatif', value: negativeCount || 1 },
-    { name: 'Neutre', value: neutralCount || 0 },
+    { name: 'Positif', value: positiveCount },
+    { name: 'Négatif', value: negativeCount },
+    { name: 'Neutre', value: neutralCount },
   ];
 
   const CHART_COLORS = ['#10B981', '#F43F5E', '#F59E0B'];
@@ -110,7 +173,7 @@ export default function BatchAnalysis() {
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/80 dark:text-indigo-400 shadow-md">
           <UploadCloud size={32} />
         </div>
-        
+
         <div className="mt-4">
           <label htmlFor="file-upload" className="cursor-pointer text-sm font-bold text-indigo-600 hover:text-indigo-500 dark:text-indigo-400">
             <span>Parcourir vos fichiers</span>
@@ -129,8 +192,8 @@ export default function BatchAnalysis() {
         )}
 
         {errorMessage && (
-          <div className="mt-4 flex items-center justify-center gap-2 text-xs font-bold text-rose-500">
-            <AlertCircle size={14} />
+          <div className="mt-4 flex items-center justify-center gap-2 text-xs font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/40 p-3 rounded-xl border border-rose-200 dark:border-rose-900/50 max-w-md mx-auto">
+            <AlertCircle size={16} />
             <span>{errorMessage}</span>
           </div>
         )}
@@ -246,4 +309,4 @@ export default function BatchAnalysis() {
       )}
     </div>
   );
-}
+} 

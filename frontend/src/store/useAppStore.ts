@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useAuthStore } from './useAuthStore';
 
 export interface EntityResult {
   word: string;
   entity_group: string;
-  score: number;
+  score?: number;
 }
 
 export interface SentimentResult {
@@ -13,10 +14,12 @@ export interface SentimentResult {
 }
 
 export interface AnalysisResult {
-  sentiment: SentimentResult;
+  sentiment: SentimentResult | string;
+  confidence?: number;
   summary: string;
   entities: EntityResult[];
   execution_time_ms: number;
+  saved_to_db?: boolean;
 }
 
 export interface HistoryItem {
@@ -73,16 +76,27 @@ export const useAppStore = create<AppState>()(
 
       setCurrentText: (text) => set({ currentText: text }),
 
-      // 🚀 Action Asynchrone : Appel direct à FastAPI
+      // 🚀 Action Asynchrone : Appel direct à FastAPI avec support JWT Token
       analyzeText: async (text: string) => {
         if (!text.trim()) return;
 
         set({ isAnalyzing: true });
 
         try {
+          // 🔑 Récupération du Token d'Authentification depuis useAuthStore
+          const token = useAuthStore.getState().token;
+
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+          };
+
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+          }
+
           const response = await fetch('http://127.0.0.1:8000/api/analyze', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({ text }),
           });
 
@@ -95,14 +109,24 @@ export const useAppStore = create<AppState>()(
           // Mise à jour des résultats
           set({ analysisResult: data, isAnalyzing: false });
 
+          // Normalisation du sentiment pour l'historique local
+          const rawSentiment = typeof data.sentiment === 'string' ? data.sentiment : data.sentiment?.label;
+          const sentimentLabel: 'Positif' | 'Neutre' | 'Négatif' = 
+            rawSentiment === 'POSITIVE' || rawSentiment === 'Positif' ? 'Positif' :
+            rawSentiment === 'NEGATIVE' || rawSentiment === 'Négatif' ? 'Négatif' : 'Neutre';
+
+          const score = data.confidence !== undefined 
+            ? (data.confidence <= 1 ? Math.round(data.confidence * 100) : Math.round(data.confidence))
+            : (data.sentiment?.score || 75);
+
           // Ajout automatique à l'historique Persistant
           const newHistoryItem: HistoryItem = {
             id: Date.now().toString(),
             date: new Date().toLocaleString('fr-FR'),
             type: 'Texte Brut',
             source: text.length > 50 ? text.substring(0, 50) + '...' : text,
-            sentiment: data.sentiment.label,
-            score: Math.round(data.sentiment.score),
+            sentiment: sentimentLabel,
+            score: score,
           };
 
           set((state) => ({

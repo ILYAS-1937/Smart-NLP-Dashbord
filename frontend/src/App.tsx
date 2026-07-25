@@ -1,18 +1,32 @@
+import { useEffect } from 'react';
 import { useAppStore } from './store/useAppStore';
-import { LayoutDashboard, FileText, History, Settings, Sun, Moon } from 'lucide-react';
+import { useAuthStore } from './store/useAuthStore';
+import { LayoutDashboard, FileText, History, Settings, Sun, Moon, LogIn, LogOut } from 'lucide-react';
 import MainDashboard from './views/MainDashboard';
 import BatchAnalysis from './views/BatchAnalysis';
 import HistoryView from './views/HistoryView';
 import AdminConfig from './views/AdminConfig';
+import { AuthModal } from './components/AuthModal';
 
 export default function App() {
   const { activeTab, setActiveTab, darkMode, toggleDarkMode } = useAppStore();
+  
+  // Utilisation des états et actions globales du store
+  const { user, isAuthenticated, isAdmin, logout, isAuthModalOpen, openAuthModal, closeAuthModal } = useAuthStore();
 
+  // Redirection automatique vers le Dashboard si l'onglet 'admin' est actif sans privilèges Admin
+  useEffect(() => {
+    if (activeTab === 'admin' && !isAdmin) {
+      setActiveTab('dashboard');
+    }
+  }, [isAdmin, activeTab, setActiveTab]);
+
+  // Menu dynamique : Masque l'onglet "Configuration Admin" sauf pour le rôle ADMIN
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'files', label: 'Analyse de Fichiers', icon: FileText },
     { id: 'history', label: 'Historique', icon: History },
-    { id: 'admin', label: 'Configuration Admin', icon: Settings },
+    ...(isAdmin ? [{ id: 'admin', label: 'Configuration Admin', icon: Settings }] : []),
   ];
 
   return (
@@ -67,15 +81,43 @@ export default function App() {
             </div>
           </button>
 
-          <div className="flex items-center gap-3 px-2 py-1">
-            <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center text-white text-xs font-semibold">
-              IT
+          {/* PROFIL / BOUTON CONNEXION */}
+          {isAuthenticated && user ? (
+            <div className="flex items-center justify-between rounded-xl bg-slate-50 p-2 border border-slate-200/60 dark:bg-slate-800/60 dark:border-slate-800">
+              <div className="flex items-center gap-2.5 overflow-hidden">
+                <div className="h-8 w-8 shrink-0 rounded-lg bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shadow-sm">
+                  {user.full_name ? user.full_name.substring(0, 2).toUpperCase() : 'US'}
+                </div>
+                <div className="overflow-hidden">
+                  <h4 className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
+                    {user.full_name}
+                  </h4>
+                  <span className={`inline-block text-[9px] font-black uppercase px-1.5 py-0.5 rounded tracking-wider ${
+                    isAdmin 
+                      ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/80 dark:text-rose-400' 
+                      : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-400'
+                  }`}>
+                    {user.role}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={logout}
+                title="Déconnexion"
+                className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 p-1.5 transition-colors"
+              >
+                <LogOut size={16} />
+              </button>
             </div>
-            <div className="overflow-hidden">
-              <h4 className="truncate text-xs font-semibold text-slate-700 dark:text-slate-200">Ilyas Tarzi</h4>
-              <p className="truncate text-[10px] text-slate-400">Élève Ingénieur</p>
-            </div>
-          </div>
+          ) : (
+            <button
+              onClick={openAuthModal}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-indigo-500/20 hover:bg-indigo-500 transition-all"
+            >
+              <LogIn size={16} />
+              <span>Connexion Enterprise</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -85,9 +127,12 @@ export default function App() {
           {activeTab === 'dashboard' && <MainDashboard />}
           {activeTab === 'files' && <BatchAnalysis />}
           {activeTab === 'history' && <HistoryView />}
-          {activeTab === 'admin' && <AdminConfig />}
+          {activeTab === 'admin' && isAdmin && <AdminConfig />}
         </div>
       </main>
+
+      {/* MODALE DE CONNEXION GLOBALE */}
+      <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
 
     </div>
   );
