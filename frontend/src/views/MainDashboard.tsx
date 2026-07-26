@@ -1,11 +1,16 @@
+import React, { useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { useAuthStore } from '../store/useAuthStore';
-import { Send, Sparkles, FileText, Tag, Loader2, BarChart2, ShieldAlert, Cpu, CheckCircle2 } from 'lucide-react';
+import { 
+  Send, Sparkles, FileText, Tag, Loader2, BarChart2, 
+  ShieldAlert, Cpu, CheckCircle2, FileDown, FileSpreadsheet 
+} from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 export default function MainDashboard() {
   const { currentText, setCurrentText, analyzeText, isAnalyzing, analysisResult } = useAppStore();
-  const { isAuthenticated, openAuthModal } = useAuthStore();
+  const { isAuthenticated, openAuthModal, token } = useAuthStore();
+  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'csv' | null>(null);
 
   const handleAnalyze = () => {
     if (!isAuthenticated) {
@@ -63,6 +68,53 @@ export default function MainDashboard() {
     count: entityCounts[key],
   }));
 
+  // 🚀 FONCTION D'EXPORTATION (PILIER 2 : PDF & CSV)
+  const handleExport = async (format: 'pdf' | 'csv') => {
+    if (!isAuthenticated) {
+      openAuthModal();
+      return;
+    }
+
+    if (!analysisResult) return;
+
+    setDownloadingFormat(format);
+
+    try {
+      const endpoint = format === 'pdf' ? '/api/export/pdf' : '/api/export/csv';
+      const res = await fetch(`http://localhost:8000${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          text: currentText,
+          sentiment: rawSentiment,
+          confidence: rawConfidence / 100,
+          summary: analysisResult.summary || currentText,
+          entities: normalizedEntities.map(e => ({ text: e.word, type: e.group })),
+          execution_time_ms: analysisResult.execution_time_ms || 12.4,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`Échec de l'exportation ${format.toUpperCase()}`);
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `InnovNow_Audit_${Date.now()}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      console.error("Erreur Export:", err);
+      alert(`Impossible de générer le fichier ${format.toUpperCase()}.`);
+    } finally {
+      setDownloadingFormat(null);
+    }
+  };
+
   return (
     <div className="space-y-8 pb-12">
       {/* Banner */}
@@ -79,7 +131,7 @@ export default function MainDashboard() {
             Analyse Textuelle Haute Précision
           </h1>
           <p className="text-sm text-indigo-200/80 leading-relaxed">
-            Moteur d'inférence décisionnel multi-modèles. Evaluation synthétique des sentiments, extraction d'entités et résumé analytique.
+            Moteur d'inférence décisionnel multi-modèles. Évaluation synthétique des sentiments, extraction d'entités et génération de rapports exécutifs.
           </p>
         </div>
       </div>
@@ -129,13 +181,36 @@ export default function MainDashboard() {
         </div>
       </div>
 
-      {/* Visual Analytics */}
+      {/* Visual Analytics & Barre d'Exportation */}
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <BarChart2 size={20} className="text-indigo-600 dark:text-indigo-400" />
             <span>Résultats de la Visual Analytics</span>
           </h2>
+
+          {/* BARRE D'EXPORTATION (PILIER 2) */}
+          {analysisResult && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleExport('csv')}
+                disabled={downloadingFormat !== null}
+                className="flex items-center gap-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-4 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {downloadingFormat === 'csv' ? <Loader2 size={15} className="animate-spin" /> : <FileSpreadsheet size={15} />}
+                <span>Exporter CSV</span>
+              </button>
+
+              <button
+                onClick={() => handleExport('pdf')}
+                disabled={downloadingFormat !== null}
+                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-500/20 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {downloadingFormat === 'pdf' ? <Loader2 size={15} className="animate-spin" /> : <FileDown size={15} />}
+                <span>Rapport PDF Exécutif</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* KPIs */}
