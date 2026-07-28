@@ -21,17 +21,21 @@ interface BatchResponse {
 export default function BatchAnalysis() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [progress, setProgress] = useState<number>(0);
+  const [processedRows, setProcessedRows] = useState<number>(0);
+  const [totalRows, setTotalRows] = useState<number>(0);
   const [batchData, setBatchData] = useState<BatchResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // RÉCUPÉRATION DE L'ÉTAT D'AUTHENTIFICATION ET DE LA MODALE
-  const { isAuthenticated, openAuthModal } = useAuthStore();
+  // RÉCUPÉRATION DE L'ÉTAT D'AUTHENTIFICATION
+  const { isAuthenticated, openAuthModal, token } = useAuthStore();
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
       setErrorMessage(null);
       setBatchData(null);
+      setProgress(0);
     }
   };
 
@@ -46,95 +50,129 @@ export default function BatchAnalysis() {
 
     setIsUploading(true);
     setErrorMessage(null);
+    setProgress(0);
+    setProcessedRows(0);
+    setTotalRows(0);
+
+    const clientId = `client_${Date.now()}`;
+    const userToken = token || localStorage.getItem('token');
+
+    // 2. Connexion WebSocket
+    const ws = new WebSocket(`ws://127.0.0.1:8000/ws/bulk/${clientId}`);
+    const accumulatedResults: BatchResultItem[] = [];
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.status === 'STARTED') {
+          setTotalRows(data.total_rows);
+        } else if (data.status === 'PROCESSING') {
+          setProgress(data.progress_percentage || 0);
+          setProcessedRows(data.processed_rows || 0);
+          setTotalRows(data.total_rows || 0);
+
+          if (data.latest_result) {
+            const res = data.latest_result;
+            const rawSentiment = res.sentiment;
+            const sentimentLabel =
+              rawSentiment === 'POSITIVE' ? 'Positif' :
+              rawSentiment === 'NEGATIVE' ? 'Négatif' : 'Neutre';
+
+            const normalizedScore = res.confidence !== undefined
+              ? Math.round(res.confidence * 100)
+              : 75;
+
+            accumulatedResults.push({
+              id: res.row_index,
+              source_text: res.text,
+              sentiment: sentimentLabel,
+              score: normalizedScore,
+              summary: res.text,
+              entities_count: res.entities_count || 0
+            });
+
+            setBatchData({
+              filename: selectedFile.name,
+              total_processed: data.total_rows,
+              results: [...accumulatedResults]
+            });
+          }
+        } else if (data.status === 'COMPLETED') {
+          setProgress(100);
+          setIsUploading(false);
+          ws.close();
+        } else if (data.status === 'ERROR') {
+          setErrorMessage(data.message || 'Erreur lors du traitement.');
+          setIsUploading(false);
+          ws.close();
+        }
+      } catch (err) {
+        console.error("Erreur WS:", err);
+      }
+    };
+
+    ws.onerror = () => {
+      setErrorMessage("Erreur de connexion WebSocket avec le serveur FastAPI.");
+      setIsUploading(false);
+    };
+
+    // 3. Envoi du fichier multipart/form-data
+    const formData = new FormData();
+    formData.append('file', selectedFile);
 
     try {
-      // Lecture du fichier texte/CSV côté client
-      const fileContent = await selectedFile.text();
-      const lines = fileContent
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-
-      if (lines.length === 0) {
-        throw new Error("Le fichier importé ne contient aucune ligne valide.");
-      }
-
-      // Structuration du payload JSON pour FastAPI
-      const payload = {
-        items: lines.map((text, idx) => ({
-          id: idx + 1,
-          text: text,
-        })),
-      };
-
-      // Envoi JSON au backend /api/analyze-batch
-      const response = await fetch('http://127.0.0.1:8000/api/analyze-batch', {
+      const response = await fetch(`http://127.0.0.1:8000/api/analyze/bulk?client_id=${clientId}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${userToken}`
         },
-        body: JSON.stringify(payload),
+        body: formData,
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || `Erreur HTTP ${response.status} du serveur.`);
       }
-
-      const data = await response.json();
-
-      // Normalisation des résultats FastAPI vers le modèle d'affichage
-      const mappedResults: BatchResultItem[] = (data.results || []).map((item: any, idx: number) => {
-        const rawSentiment = item.sentiment || 'NEUTRAL';
-        const sentimentLabel =
-          rawSentiment === 'POSITIVE' || rawSentiment === 'Positif' ? 'Positif' :
-          rawSentiment === 'NEGATIVE' || rawSentiment === 'Négatif' ? 'Négatif' : 'Neutre';
-
-        const rawScore = item.confidence !== undefined ? item.confidence : item.score || 0.75;
-        const normalizedScore = rawScore <= 1 ? Math.round(rawScore * 100) : Math.round(rawScore);
-
-        return {
-          id: item.id || idx + 1,
-          source_text: item.text || item.source_text || '',
-          sentiment: sentimentLabel,
-          score: normalizedScore,
-          summary: item.summary || item.text || '',
-          entities_count: item.entities_count || (item.text ? Math.min(item.text.split(' ').length, 4) : 0),
-        };
-      });
-
-      setBatchData({
-        filename: selectedFile.name,
-        total_processed: data.total_processed || mappedResults.length,
-        results: mappedResults,
-      });
     } catch (err: any) {
-      const message = typeof err === 'string' ? err : err?.message || "Impossible de traiter le fichier.";
+      const message = typeof err === 'string' ? err : err?.message || "Impossible de contacter le serveur.";
       setErrorMessage(message);
-    } finally {
       setIsUploading(false);
+      ws.close();
     }
   };
 
-  const exportToCSV = () => {
+const exportToCSV = () => {
     if (!isAuthenticated) {
       openAuthModal();
       return;
     }
 
-    if (!batchData) return;
-    const headers = "Texte,Sentiment,Score,Entites\n";
+    if (!batchData || !batchData.results) return;
+
+    // 💡 Point-virgule (;) pour que les colonnes soient séparées et aérées sous Excel
+    const headers = "Texte;Sentiment;Score;Entités Détectées\n";
+
     const rows = batchData.results
-      .map((r) => `"${r.source_text.replace(/"/g, '""')}",${r.sentiment},${r.score}%,${r.entities_count}`)
+      .map((r) => {
+        const cleanText = r.source_text.replace(/"/g, '""').replace(/\r?\n|\r/g, ' ');
+        return `"${cleanText}";${r.sentiment};${r.score}%;${r.entities_count}`;
+      })
       .join("\n");
 
-    const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
+    // \ufeff (BOM UTF-8) pour afficher l'Arabe et le Français proprement
+    const blob = new Blob(["\ufeff" + headers + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `rapport_nlp_${batchData.filename}`);
+    
+    const cleanFilename = batchData.filename.replace(/\.[^/.]+$/, "");
+    link.setAttribute('download', `rapport_nlp_${cleanFilename}.csv`);
+    
     document.body.appendChild(link);
     link.click();
+    
+    // On retire uniquement l'élément HTML du DOM, SANS détruire l'URL mémoire
     document.body.removeChild(link);
   };
 
@@ -159,11 +197,11 @@ export default function BatchAnalysis() {
         <div className="relative z-10 max-w-xl space-y-2">
           <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/20 px-3.5 py-1 text-xs font-semibold text-indigo-300 border border-indigo-400/20">
             <Layers size={14} className="text-indigo-400" />
-            <span>Traitement par Lot Haute Vélocité</span>
+            <span>Traitement par Lot Haute Vélocité (WebSockets)</span>
           </div>
           <h1 className="text-3xl font-black tracking-tight text-white">Analyse de Fichiers en Masse</h1>
           <p className="text-xs text-indigo-200/80 leading-relaxed">
-            Téléversez vos fichiers CSV ou TXT. Le moteur extrait automatiquement les sentiments et entités sur l'ensemble de votre corpus de données.
+            Téléversez vos fichiers CSV ou TXT. Le moteur extrait automatiquement les sentiments et entités via streaming en temps réel.
           </p>
         </div>
       </div>
@@ -191,6 +229,22 @@ export default function BatchAnalysis() {
           </div>
         )}
 
+        {/* Barre de Progression WebSocket */}
+        {isUploading && (
+          <div className="mt-6 max-w-md mx-auto space-y-2">
+            <div className="flex justify-between text-xs font-bold text-indigo-400">
+              <span>Traitement asynchrone...</span>
+              <span>{progress}% ({processedRows}/{totalRows} lignes)</span>
+            </div>
+            <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
+              <div 
+                className="bg-gradient-to-r from-indigo-500 to-emerald-400 h-full transition-all duration-200"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {errorMessage && (
           <div className="mt-4 flex items-center justify-center gap-2 text-xs font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/40 p-3 rounded-xl border border-rose-200 dark:border-rose-900/50 max-w-md mx-auto">
             <AlertCircle size={16} />
@@ -207,7 +261,7 @@ export default function BatchAnalysis() {
             {isUploading ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
-                <span>Exécution de l'Audit par Lot...</span>
+                <span>Streaming en Cours... ({progress}%)</span>
               </>
             ) : (
               <>
@@ -219,11 +273,11 @@ export default function BatchAnalysis() {
         </div>
       </div>
 
-      {/* Graphique + Tableau des Résultats */}
-      {batchData && (
+      {/* Graphique + Tableau des Résultats en Temps Réel */}
+      {batchData && batchData.results.length > 0 && (
         <div className="space-y-6 animate-fadeIn">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
+
             {/* Visualisation Synthétique Recharts */}
             <div className="rounded-3xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between">
               <div className="flex items-center justify-between mb-2">
@@ -260,19 +314,19 @@ export default function BatchAnalysis() {
                 <div className="flex items-center gap-2">
                   <CheckCircle className="text-emerald-500" size={18} />
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    {batchData.filename} — {batchData.total_processed} lignes analysées
+                    {batchData.filename} — {batchData.results.length} / {batchData.total_processed} lignes analysées
                   </h3>
                 </div>
                 <button
                   onClick={exportToCSV}
-                  className="flex items-center gap-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 px-3.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors"
+                  className="flex items-center gap-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 px-3.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
                 >
                   <Download size={14} />
                   <span>Export CSV</span>
                 </button>
               </div>
 
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto max-h-80">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50/50 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:border-slate-800 dark:bg-slate-950/40">
@@ -309,4 +363,4 @@ export default function BatchAnalysis() {
       )}
     </div>
   );
-} 
+}

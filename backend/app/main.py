@@ -4,11 +4,15 @@ import io
 import csv
 import json
 import os
+import asyncio
 from typing import List, Optional, Dict
 from datetime import datetime, date
 from collections import Counter
 
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import (
+    FastAPI, Depends, HTTPException, status, Query,
+    WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, File
+)
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,8 +115,8 @@ seed_default_users()
 # ==============================================================================
 app = FastAPI(
     title="InnovNow NLP Analytics API",
-    version="3.0.0",
-    description="Moteur NLP d'analyse décisionnelle B.I. & Multilingue pour InnovNow Consulting Platform"
+    version="4.0.0",
+    description="Moteur NLP d'analyse décisionnelle B.I., Multilingue & Traitement Asynchrone en Masse"
 )
 
 app.add_middleware(
@@ -302,7 +306,6 @@ def extract_word_cloud(text: str, lang: str, top_n: int = 25) -> List[WordItem]:
 # 7. MOTEUR NER MULTILINGUE HAUTE PRÉCISION (AR, FR, EN)
 # ==============================================================================
 
-# 1. Dans analyze_text : Ajout des mots de sentiment français manquants
 pos_words = [
     "excellent", "bon", "super", "bien", "formidable", "recommande", "satisfait", 
     "succès", "performant", "enthousiasme", "surpasse", "innovation", "progrès", 
@@ -311,9 +314,14 @@ pos_words = [
     "ممتاز", "ممتازا", "ممتازة", "رائع", "استثنائية", "استثنائي", "نوصي", "ابتكار", "الابتكار", "جيد", "مبتكرة", "ذكية"
 ]
 
-# 2. Fonction NER corrigée
+neg_words = [
+    "mauvais", "erreur", "problème", "problèmes", "lent", "déçu", "horrible", "panne", 
+    "bad", "terrible", "awful", "worst", "slow", "error", "fail", "issue", "problem",
+    "سيء", "تأخير", "التأخير", "بطيء", "مشكلة", "مشاكل", "فشل", "مرتفعة", "غالي"
+]
+
 def extract_dynamic_entities(text: str) -> List[EntityItem]:
-    """Analyseur NER multilingue haute précision."""
+    """Analyseur NER multilingue haute précision (AR, FR, EN)."""
     entities = []
     seen = set()
 
@@ -327,13 +335,11 @@ def extract_dynamic_entities(text: str) -> List[EntityItem]:
     # A. DÉTECTION EN ARABE
     # --------------------------------------------------------------------------
     if re.search(r'[\u0600-\u06FF]', text):
-        # Villes connues (Priorité 1)
         ar_cities = ["الدار البيضاء", "الرباط", "مراكش", "فاس", "طنجة", "أكادير", "مكناس", "وجدة", "باريس", "لندن"]
         for city in ar_cities:
             if re.search(r'\b' + re.escape(city) + r'\b', text):
                 add_entity(city, "LOC")
 
-        # Capture uniquement le PREMIER mot après "مدينة" s'il n'a pas déjà été capturé
         found_cities = re.findall(r"(?:بمدينة|مدينة)\s+([\u0600-\u06FF]+)", text)
         for c in found_cities:
             if c not in ["خطوة", "جديدة", "كبيرة", "استثنائية"]:
@@ -343,7 +349,7 @@ def extract_dynamic_entities(text: str) -> List[EntityItem]:
         for p in found_people:
             add_entity(p, "PER")
 
-        found_orgs = re.findall(r"(?:شركة|مؤسسة|منظمة|مجموعة)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+)?)", text)
+        found_orgs = re.findall(r"(?:شركة|مؤسسة|منظمة|مجموعة|البنك)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+)?)", text)
         for o in found_orgs:
             add_entity(o, "ORG")
 
@@ -351,31 +357,30 @@ def extract_dynamic_entities(text: str) -> List[EntityItem]:
     # B. DÉTECTION EN LATIN (FRANÇAIS & ANGLAIS)
     # --------------------------------------------------------------------------
     else:
-        # 1. Gazetteers d'Entreprises Majeures (Priorité 1)
+        # 1. Entreprises / Organisations (ORG)
         known_orgs = [
             "Capgemini", "Microsoft", "Google", "Apple", "Novatech", "Amazon", 
-            "Orange", "Tesla", "Meta", "Atos", "Accenture", "CGI", "Deloitte", "KPMG", "IBM", "Oracle"
+            "Orange", "Tesla", "Meta", "Atos", "Accenture", "CGI", "Deloitte", "KPMG", "IBM", "Oracle",
+            "Attijariwafa Bank", "Banque Populaire", "Barclays", "Siemens", "Philips", "General Electric", "Medtronic", "DHL", "FedEx", "Aramex", "Jumia"
         ]
         for org in known_orgs:
             if re.search(r'\b' + re.escape(org) + r'\b', text, re.IGNORECASE):
                 add_entity(org, "ORG")
 
-        # 2. Gazetteers de Lieux Majeurs / Aéroports / Villes
+        # 2. Lieux & Monuments (LOC)
         known_locs = [
             "Tour Eiffel", "Champs-Élysées", "Notre-Dame", "Gare de Lyon", "Gare du Nord", 
             "Big Ben", "Heathrow Airport", "JFK Airport", "New York", "London", "Paris", 
-            "Casablanca", "Rabat", "Tokyo", "Berlin", "Madrid"
+            "Casablanca", "Rabat", "Tokyo", "Berlin", "Madrid", "Boston", "Seattle"
         ]
         for loc in known_locs:
             if re.search(r'\b' + re.escape(loc) + r'\b', text, re.IGNORECASE):
                 add_entity(loc, "LOC")
 
-        # 3. Hôtels
         hotels = re.findall(r"\b(?:hôtel|hotel)\s+([A-Z][a-zA-Z0-9]+)\b", text, re.IGNORECASE)
         for h in hotels:
             add_entity(f"Hôtel {h}", "LOC")
 
-        # 4. Détection dynamique d'entreprises
         matches = re.finditer(
             r"\b(?:chez|start\-up|société|entreprise|firme|company|corp|inc|vendor|with|équipes de|équipe de)\s+([A-Z][a-zA-Z0-9]+)\b",
             text,
@@ -387,33 +392,230 @@ def extract_dynamic_entities(text: str) -> List[EntityItem]:
             if org_candidate[0].isupper() and org_candidate.lower() not in blacklist_words:
                 add_entity(org_candidate, "ORG")
 
-# 5. Détection de Personnes (Prénom Nom, Prénoms composés, sans les titres)
+        # 3. Personnes précédées d'un Titre/Civilité (PER) -> ex: "M. Soulaimane", "Directeur Soulaimane"
+        title_people = re.findall(
+            r"\b(?:Le\s+|La\s+)?(?:Directeur|Directrice|Professeur|Prof|Docteur|Dr|Monsieur|M\.|Madame|Mme|Président|Manager)\s+([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+)?)\b", 
+            text, 
+            flags=re.IGNORECASE
+        )
+        for p in title_people:
+            p_clean = p.strip()
+            if p_clean not in seen and p_clean not in known_orgs and p_clean not in known_locs:
+                add_entity(p_clean, "PER")
+
+        # 4. Prénoms / Noms explicites (PER)
+        known_people_list = ["Soulaimane", "Ilyas", "Moataz", "Tarzi", "Mohammed"]
+        for p in known_people_list:
+            if re.search(r'\b' + re.escape(p) + r'\b', text, re.IGNORECASE):
+                add_entity(p, "PER")
+
+        # 5. Noms composés (Prénom + Nom)
         titles_pattern = r"\b(?:Le\s+|La\s+)?(?:Directeur|Directrice|Professeur|Prof|Docteur|Dr|Monsieur|M\.|Madame|Mme|Président|Manager)\s+"
         cleaned_text_for_per = re.sub(titles_pattern, "", text, flags=re.IGNORECASE)
 
-        # Extraction des noms complets (ex: Jean-Pierre Lambert, Karim Alami)
         people = re.findall(r"\b([A-Z][a-zA-Z\-]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", cleaned_text_for_per)
         
-        excluded_words = ["Airport", "Street", "Avenue", "Boulevard", "New", "York", "San", "North", "South", "Aéroport", "Casablanca", "Paris", "Novatech", "Microsoft"]
+        excluded_words = ["Airport", "Street", "Avenue", "Boulevard", "New", "York", "San", "North", "South", "Aéroport", "Casablanca", "Paris", "Novatech", "Microsoft", "Tour", "Eiffel"]
         for p in people:
             words = p.split()
             if not any(w in excluded_words for w in words):
-                if p not in seen and not p.startswith(("The ", "La ", "Les ", "Pour ", "Dans ", "En ", "Hôtel ")):
+                if p not in seen and not p.startswith(("The ", "La ", "Les ", "Pour ", "Dans ", "En ", "Hôtel ")) and p not in known_locs and p not in known_orgs:
                     add_entity(p, "PER")
 
-        # 6. Villes / Lieux précédés de prépositions (Exclusion des entreprises connues)
+        # 6. Lieux introduits par des prépositions (LOC)
         locations = re.findall(r"\b(?:à|de|comme|vers|en|in|near|from|to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", text)
         for loc in locations:
             if loc not in seen and loc not in ["France", "Europe", "Lumina"] and len(loc) > 2:
                 words = loc.split()
-                # Ne pas ajouter si c'est une entreprise connue
                 if not any(w.lower() in blacklist_words for w in words) and loc not in known_orgs:
                     add_entity(loc, "LOC")
 
     return entities
 
 # ==============================================================================
-# 8. ENDPOINTS AUTHENTIFICATION & ANALYSE NLP
+# 8. WEBSOCKET MANAGER & TRAITEMENT ASYNCHRONE EN MASSE (PILIER 4)
+# ==============================================================================
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, client_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+
+    def disconnect(self, client_id: str):
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+
+    async def send_json(self, client_id: str, data: dict):
+        if client_id in self.active_connections:
+            try:
+                await self.active_connections[client_id].send_json(data)
+            except Exception:
+                self.disconnect(client_id)
+
+ws_manager = ConnectionManager()
+
+@app.websocket("/ws/bulk/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    """Endpoint WebSocket pour le streaming de progression du traitement en masse."""
+    await ws_manager.connect(client_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(client_id)
+
+
+async def process_bulk_file_task(client_id: str, file_bytes: bytes, filename: str, user_id: int):
+    """Tâche de fond exécutant l'analyse NLP ligne par ligne et notifiant via WebSocket."""
+    db = database.SessionLocal()
+    try:
+        content_str = file_bytes.decode('utf-8', errors='ignore')
+        lines = [line.strip() for line in content_str.splitlines() if line.strip()]
+        
+        if lines and ("text" in lines[0].lower() or "content" in lines[0].lower() or "review" in lines[0].lower()):
+            lines = lines[1:]
+
+        total_rows = len(lines)
+        if total_rows == 0:
+            await ws_manager.send_json(client_id, {
+                "status": "ERROR",
+                "message": "Le fichier est vide ou ne contient aucun texte valide."
+            })
+            return
+
+        await ws_manager.send_json(client_id, {
+            "status": "STARTED",
+            "total_rows": total_rows,
+            "filename": filename
+        })
+
+        results = []
+        positive_count = 0
+        negative_count = 0
+        neutral_count = 0
+
+        for index, line in enumerate(lines):
+            columns = line.split(',')
+            text_to_analyze = columns[-1].strip('"\' ') if len(columns) > 1 else line
+
+            start_time = time.time()
+            lang = detect_language(text_to_analyze)
+            text_lower = text_to_analyze.lower()
+
+            p_count = sum(1 for w in pos_words if re.search(r'\b' + re.escape(w) + r'\b', text_lower))
+            n_count = sum(1 for w in neg_words if re.search(r'\b' + re.escape(w) + r'\b', text_lower))
+
+            if p_count > n_count:
+                sentiment = "POSITIVE"
+                positive_count += 1
+                confidence = round(0.82 + (min(p_count, 4) * 0.03), 2)
+            elif n_count > p_count:
+                sentiment = "NEGATIVE"
+                negative_count += 1
+                confidence = round(0.80 + (min(n_count, 4) * 0.04), 2)
+            else:
+                sentiment = "NEUTRAL"
+                neutral_count += 1
+                confidence = 0.75
+
+            entities = extract_dynamic_entities(text_to_analyze)
+            exec_time = round((time.time() - start_time) * 1000, 2)
+
+            history_entry = models.AnalysisHistory(
+                text_content=text_to_analyze,
+                sentiment=sentiment,
+                confidence_score=confidence,
+                summary=text_to_analyze[:120] + "..." if len(text_to_analyze) > 120 else text_to_analyze,
+                user_id=user_id
+            )
+            db.add(history_entry)
+
+            row_result = {
+                "row_index": index + 1,
+                "text": text_to_analyze,
+                "sentiment": sentiment,
+                "confidence": confidence,
+                "language": lang,
+                "entities_count": len(entities),
+                "entities": [{"text": e.text, "type": e.type} for e in entities],
+                "execution_time_ms": exec_time
+            }
+            
+            results.append(row_result)
+
+            progress_pct = int(((index + 1) / total_rows) * 100)
+            await ws_manager.send_json(client_id, {
+                "status": "PROCESSING",
+                "progress_percentage": progress_pct,
+                "processed_rows": index + 1,
+                "total_rows": total_rows,
+                "latest_result": row_result,
+                "stats": {
+                    "positive": positive_count,
+                    "negative": negative_count,
+                    "neutral": neutral_count
+                }
+            })
+
+            await asyncio.sleep(0.015)
+
+        db.commit()
+
+        await ws_manager.send_json(client_id, {
+            "status": "COMPLETED",
+            "progress_percentage": 100,
+            "processed_rows": total_rows,
+            "total_rows": total_rows,
+            "stats": {
+                "positive": positive_count,
+                "negative": negative_count,
+                "neutral": neutral_count
+            },
+            "results": results
+        })
+
+    except Exception as e:
+        await ws_manager.send_json(client_id, {
+            "status": "ERROR",
+            "message": f"Erreur lors du traitement : {str(e)}"
+        })
+    finally:
+        db.close()
+
+
+@app.post("/api/analyze/bulk")
+async def analyze_bulk_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    client_id: str = Query(...),
+    current_user: Optional[models.User] = Depends(get_optional_current_user)
+):
+    """[PILIER 4] Endpoint d'Upload pour lancer l'analyse en masse asynchrone."""
+    if not file.filename.endswith(('.csv', '.txt')):
+        raise HTTPException(status_code=400, detail="Seuls les fichiers .csv et .txt sont supportés.")
+
+    file_bytes = await file.read()
+    user_id = current_user.id if current_user else 1
+
+    background_tasks.add_task(
+        process_bulk_file_task,
+        client_id=client_id,
+        file_bytes=file_bytes,
+        filename=file.filename,
+        user_id=user_id
+    )
+
+    return {
+        "message": "Traitement en masse démarré en arrière-plan.",
+        "filename": file.filename,
+        "client_id": client_id
+    }
+
+# ==============================================================================
+# 9. ENDPOINTS AUTHENTIFICATION & ANALYSE NLP
 # ==============================================================================
 
 @app.post("/api/auth/login", response_model=Token)
@@ -447,19 +649,6 @@ def analyze_text(
     text_lower = text.lower()
 
     detected_lang = detect_language(text)
-
-    # Dictionnaire de sentiments étendu (FR, EN, AR)
-    pos_words = [
-        "excellent", "bon", "super", "bien", "formidable", "recommande", "satisfait", 
-        "succès", "performant", "enthousiasme", "surpasse", "innovation", "progrès", 
-        "great", "good", "amazing", "awesome", "perfect", "love",
-        "ممتاز", "ممتازا", "ممتازة", "رائع", "استثنائية", "استثنائي", "نوصي", "ابتكار", "الابتكار", "جيد", "مبتكرة", "ذكية"
-    ]
-    neg_words = [
-        "mauvais", "erreur", "problème", "problèmes", "lent", "déçu", "horrible", "panne", 
-        "bad", "terrible", "awful", "worst", "slow", "error", "fail", "issue", "problem",
-        "سيء", "تأخير", "التأخير", "بطيء", "مشكلة", "مشاكل", "فشل", "مرتفعة", "غالي"
-    ]
 
     pos_count = sum(1 for w in pos_words if re.search(r'\b' + re.escape(w) + r'\b', text_lower))
     neg_count = sum(1 for w in neg_words if re.search(r'\b' + re.escape(w) + r'\b', text_lower))
@@ -510,7 +699,7 @@ def analyze_text(
     )
 
 # ==============================================================================
-# 9. ENDPOINTS FILTRAGE MULTI-CRITÈRES & HISTORIQUE B.I.
+# 10. ENDPOINTS FILTRAGE MULTI-CRITÈRES & HISTORIQUE B.I.
 # ==============================================================================
 
 @app.get("/api/history/filter", response_model=List[HistoryItemResponse])
@@ -566,182 +755,205 @@ def get_user_history(
              .all()
 
 # ==============================================================================
-# 10. GENERATEUR DE RAPPORTS PDF (UNICODE & RTL ARABE CORRIGÉ) & CSV
+# 11. GÉNÉRATEUR DE RAPPORTS PDF & CSV (AVEC SÉPARATEUR POINT-VIRGULE EXCEL FR/MA)
 # ==============================================================================
 
 @app.post("/api/export/pdf")
 def generate_pdf_report(
     payload: ExportRequest,
-    current_user: models.User = Depends(get_current_user)
+    current_user: Optional[models.User] = Depends(get_optional_current_user)
 ):
-    """Génère un Rapport PDF Exécutif compatible RTL / Arabe et auto-complète les entités si vides."""
-    
-    # 💡 CORRECTIF HISTORIQUE : Si les entités sont vides, on les ré-extrait à la volée !
-    entities_to_export = payload.entities
-    if not entities_to_export:
-        entities_to_export = extract_dynamic_entities(payload.text)
+    """Génère un Rapport PDF Exécutif compatible RTL / Arabe sans exiger un jeton d'authentification strict."""
+    try:
+        user_name = current_user.full_name if current_user else "Analyste / Invité"
+        user_role = current_user.role if current_user else "ANALYST"
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=40,
-        leftMargin=40,
-        topMargin=40,
-        bottomMargin=40
-    )
+        entities_to_export = payload.entities
+        if not entities_to_export:
+            entities_to_export = extract_dynamic_entities(payload.text)
 
-    styles = getSampleStyleSheet()
-    
-    title_style = ParagraphStyle(
-        'DocTitle', parent=styles['Heading1'],
-        fontName=UNICODE_FONT_BOLD, fontSize=20,
-        textColor=colors.HexColor('#0F172A'), spaceAfter=4
-    )
-    subtitle_style = ParagraphStyle(
-        'DocSubTitle', parent=styles['Normal'],
-        fontName=UNICODE_FONT, fontSize=9,
-        textColor=colors.HexColor('#64748B'), spaceAfter=15
-    )
-    heading_style = ParagraphStyle(
-        'SectionHeading', parent=styles['Heading2'],
-        fontName=UNICODE_FONT_BOLD, fontSize=11,
-        textColor=colors.HexColor('#1E293B'), spaceBefore=14, spaceAfter=8
-    )
-    
-    # Configuration d'alignement pour les langues LTR et RTL
-    body_style_ltr = ParagraphStyle(
-        'BodyTextLTR', parent=styles['Normal'],
-        fontName=UNICODE_FONT, fontSize=9.5,
-        textColor=colors.HexColor('#334155'), leading=14,
-        alignment=TA_LEFT
-    )
-    
-    body_style_rtl = ParagraphStyle(
-        'BodyTextRTL', parent=body_style_ltr,
-        alignment=TA_RIGHT
-    )
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=40,
+            bottomMargin=40
+        )
 
-    elements = []
-
-    # En-Tête Officiel
-    elements.append(Paragraph("InnovNow Consulting Platform", title_style))
-    elements.append(Paragraph(
-        f"Rapport d'Audit NLP Exécutif — Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} par <b>{current_user.full_name}</b> ({current_user.role})", 
-        subtitle_style
-    ))
-    elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#4F46E5'), spaceAfter=15))
-
-    is_arabic_doc = bool(re.search(r'[\u0600-\u06FF]', payload.text))
-    active_body_style = body_style_rtl if is_arabic_doc else body_style_ltr
-
-    clean_summary = process_text_for_pdf(payload.summary.replace('"', '').strip())
-    clean_text = process_text_for_pdf(payload.text.replace('<', '').replace('>', '').strip())
-
-    # Cards KPIs
-    sentiment_color = "#10B981" if payload.sentiment == "POSITIVE" else ("#F43F5E" if payload.sentiment == "NEGATIVE" else "#F59E0B")
-    
-    kpi_data = [
-        [
-            Paragraph("<font size=8 color='#64748B'><b>SENTIMENT DOMINANT</b></font>", body_style_ltr),
-            Paragraph("<font size=8 color='#64748B'><b>CONFIANCE IA</b></font>", body_style_ltr),
-            Paragraph("<font size=8 color='#64748B'><b>LATENCE INFERENCE</b></font>", body_style_ltr),
-            Paragraph("<font size=8 color='#64748B'><b>ENTITES DETECTEES</b></font>", body_style_ltr)
-        ],
-        [
-            Paragraph(f"<font size=12 color='{sentiment_color}'><b>{payload.sentiment}</b></font>", body_style_ltr),
-            Paragraph(f"<font size=12 color='#0F172A'><b>{int(payload.confidence * 100)}%</b></font>", body_style_ltr),
-            Paragraph(f"<font size=12 color='#0F172A'><b>{payload.execution_time_ms} ms</b></font>", body_style_ltr),
-            Paragraph(f"<font size=12 color='#4F46E5'><b>{len(entities_to_export)} entité(s)</b></font>", body_style_ltr)
-        ]
-    ]
-
-    kpi_table = Table(kpi_data, colWidths=[130, 130, 130, 130])
-    kpi_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
-        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-        ('PADDING', (0,0), (-1,-1), 8),
-        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-    ]))
-    elements.append(kpi_table)
-    elements.append(Spacer(1, 10))
-
-    # Synthèse BART
-    elements.append(Paragraph("1. Synthèse Décisionnelle Automatique (BART Summarizer)", heading_style))
-    summary_p = Paragraph(f"<i>\"{clean_summary}\"</i>", active_body_style)
-    summary_table = Table([[summary_p]], colWidths=[520])
-    summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#EEF2FF')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#C7D2FE')),
-        ('PADDING', (0,0), (-1,-1), 10),
-    ]))
-    elements.append(summary_table)
-    elements.append(Spacer(1, 10))
-
-    # Tableau NER (Utilise entities_to_export)
-    elements.append(Paragraph("2. Cartographie des Entités Extraites (NER)", heading_style))
-    if entities_to_export:
-        ent_data = [["Entité / Terme Détecté", "Catégorie Typologique"]]
-        for e in entities_to_export:
-            formatted_entity_text = process_text_for_pdf(e.text)
-            ent_data.append([Paragraph(formatted_entity_text, active_body_style), e.type])
+        styles = getSampleStyleSheet()
         
-        ent_table = Table(ent_data, colWidths=[320, 200])
-        ent_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4F46E5')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('FONTNAME', (0,0), (-1,0), UNICODE_FONT_BOLD),
-            ('FONTSIZE', (0,0), (-1,0), 9),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
+        title_style = ParagraphStyle(
+            'DocTitle', parent=styles['Heading1'],
+            fontName=UNICODE_FONT_BOLD, fontSize=20,
+            textColor=colors.HexColor('#0F172A'), spaceAfter=4
+        )
+        subtitle_style = ParagraphStyle(
+            'DocSubTitle', parent=styles['Normal'],
+            fontName=UNICODE_FONT, fontSize=9,
+            textColor=colors.HexColor('#64748B'), spaceAfter=15
+        )
+        heading_style = ParagraphStyle(
+            'SectionHeading', parent=styles['Heading2'],
+            fontName=UNICODE_FONT_BOLD, fontSize=11,
+            textColor=colors.HexColor('#1E293B'), spaceBefore=14, spaceAfter=8
+        )
+        
+        body_style_ltr = ParagraphStyle(
+            'BodyTextLTR', parent=styles['Normal'],
+            fontName=UNICODE_FONT, fontSize=9.5,
+            textColor=colors.HexColor('#334155'), leading=14,
+            alignment=TA_LEFT
+        )
+        
+        body_style_rtl = ParagraphStyle(
+            'BodyTextRTL', parent=body_style_ltr,
+            alignment=TA_RIGHT
+        )
+
+        elements = []
+
+        elements.append(Paragraph("InnovNow Consulting Platform", title_style))
+        elements.append(Paragraph(
+            f"Rapport d'Audit NLP Exécutif — Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} par <b>{user_name}</b> ({user_role})", 
+            subtitle_style
+        ))
+        elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#4F46E5'), spaceAfter=15))
+
+        is_arabic_doc = bool(re.search(r'[\u0600-\u06FF]', payload.text))
+        active_body_style = body_style_rtl if is_arabic_doc else body_style_ltr
+
+        clean_summary = process_text_for_pdf(payload.summary.replace('"', '').strip())
+        clean_text = process_text_for_pdf(payload.text.replace('<', '').replace('>', '').strip())
+
+        sentiment_color = "#10B981" if payload.sentiment in ["POSITIVE", "Positif"] else ("#F43F5E" if payload.sentiment in ["NEGATIVE", "Négatif"] else "#F59E0B")
+        
+        kpi_data = [
+            [
+                Paragraph("<font size=8 color='#64748B'><b>SENTIMENT DOMINANT</b></font>", body_style_ltr),
+                Paragraph("<font size=8 color='#64748B'><b>CONFIANCE IA</b></font>", body_style_ltr),
+                Paragraph("<font size=8 color='#64748B'><b>LATENCE INFERENCE</b></font>", body_style_ltr),
+                Paragraph("<font size=8 color='#64748B'><b>ENTITES DETECTEES</b></font>", body_style_ltr)
+            ],
+            [
+                Paragraph(f"<font size=12 color='{sentiment_color}'><b>{payload.sentiment}</b></font>", body_style_ltr),
+                Paragraph(f"<font size=12 color='#0F172A'><b>{int(payload.confidence * 100)}%</b></font>", body_style_ltr),
+                Paragraph(f"<font size=12 color='#0F172A'><b>{payload.execution_time_ms} ms</b></font>", body_style_ltr),
+                Paragraph(f"<font size=12 color='#4F46E5'><b>{len(entities_to_export)} entité(s)</b></font>", body_style_ltr)
+            ]
+        ]
+
+        kpi_table = Table(kpi_data, colWidths=[130, 130, 130, 130])
+        kpi_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
             ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
             ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 6),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('PADDING', (0,0), (-1,-1), 8),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
         ]))
-        elements.append(ent_table)
-    else:
-        elements.append(Paragraph("Aucune entité spécifique détectée.", body_style_ltr))
+        elements.append(kpi_table)
+        elements.append(Spacer(1, 10))
 
-    elements.append(Spacer(1, 10))
+        elements.append(Paragraph("1. Synthèse Décisionnelle Automatique (BART Summarizer)", heading_style))
+        summary_p = Paragraph(f"<i>\"{clean_summary}\"</i>", active_body_style)
+        summary_table = Table([[summary_p]], colWidths=[520])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#EEF2FF')),
+            ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#C7D2FE')),
+            ('PADDING', (0,0), (-1,-1), 10),
+        ]))
+        elements.append(summary_table)
+        elements.append(Spacer(1, 10))
 
-    # Extrait Source
-    elements.append(Paragraph("3. Extrait du Corpus Analysé", heading_style))
-    text_snippet = clean_text[:400] + ("..." if len(clean_text) > 400 else "")
-    elements.append(Paragraph(f"\"{text_snippet}\"", active_body_style))
+        elements.append(Paragraph("2. Cartographie des Entités Extraites (NER)", heading_style))
+        if entities_to_export:
+            ent_data = [["Entité / Terme Détecté", "Catégorie Typologique"]]
+            for e in entities_to_export:
+                formatted_entity_text = process_text_for_pdf(e.text)
+                ent_data.append([Paragraph(formatted_entity_text, active_body_style), e.type])
+            
+            ent_table = Table(ent_data, colWidths=[320, 200])
+            ent_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4F46E5')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('FONTNAME', (0,0), (-1,0), UNICODE_FONT_BOLD),
+                ('FONTSIZE', (0,0), (-1,0), 9),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
+                ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
+                ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+                ('PADDING', (0,0), (-1,-1), 6),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            elements.append(ent_table)
+        else:
+            elements.append(Paragraph("Aucune entité spécifique détectée.", body_style_ltr))
 
-    doc.build(elements)
-    buffer.seek(0)
-    filename = f"Rapport_NLP_InnovNow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    return StreamingResponse(
-        buffer, 
-        media_type="application/pdf", 
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+        elements.append(Spacer(1, 10))
+
+        elements.append(Paragraph("3. Extrait du Corpus Analysé", heading_style))
+        text_snippet = clean_text[:400] + ("..." if len(clean_text) > 400 else "")
+        elements.append(Paragraph(f"\"{text_snippet}\"", active_body_style))
+
+        doc.build(elements)
+        buffer.seek(0)
+        filename = f"Rapport_NLP_InnovNow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        return StreamingResponse(
+            buffer, 
+            media_type="application/pdf", 
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la génération du rapport PDF : {str(e)}"
+        )
 
 
 @app.post("/api/export/csv")
-def export_csv_report(payload: ExportRequest):
+def export_csv_report(
+    payload: ExportRequest,
+    current_user: Optional[models.User] = Depends(get_optional_current_user)
+):
     output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Métrique / Champ", "Valeur"])
-    writer.writerow(["Sentiment Dominant", payload.sentiment])
-    writer.writerow(["Score de Confiance", f"{int(payload.confidence * 100)}%"])
-    writer.writerow(["Latence Inférence (ms)", payload.execution_time_ms])
-    writer.writerow(["Résumé Synthétique", payload.summary])
-    writer.writerow([])
-    writer.writerow(["Entité Détectée", "Catégorie"])
-    for e in payload.entities:
-        writer.writerow([e.text, e.type])
+    # Séparateur point-virgule (;) pour Excel FR/MA
+    writer = csv.writer(output, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+    
+    # En-tête B.I. standardisé identique à l'Analyse en Masse
+    writer.writerow([
+        "ID", "Langue", "Sentiment", "Score Confiance", 
+        "Latence (ms)", "Nombre Entités", "Entités Détectées", 
+        "Résumé Synthétique", "Texte Source"
+    ])
+    
+    entities_str = " | ".join([f"{e.text} [{e.type}]" for e in payload.entities]) if payload.entities else "Aucune"
+    lang = detect_language(payload.text)
+    
+    clean_text = payload.text.replace("\r", " ").replace("\n", " ")
+    clean_summary = payload.summary.replace("\r", " ").replace("\n", " ")
+    
+    writer.writerow([
+        1,
+        lang,
+        payload.sentiment,
+        f"{int(payload.confidence * 100)}%",
+        f"{payload.execution_time_ms} ms",
+        len(payload.entities) if payload.entities else 0,
+        entities_str,
+        clean_summary,
+        clean_text
+    ])
+    
     output.seek(0)
+    # Encodage utf-8-sig (avec BOM UTF-8) pour affichage parfait sous Excel
     return StreamingResponse(
-        io.BytesIO(output.getvalue().encode("utf-8")), 
-        media_type="text/csv", 
-        headers={"Content-Disposition": "attachment; filename=Audit_NLP_Export.csv"}
+        io.BytesIO(output.getvalue().encode("utf-8-sig")), 
+        media_type="text/csv; charset=utf-8", 
+        headers={"Content-Disposition": "attachment; filename=Audit_NLP_InnovNow.csv"}
     )
 
 # ==============================================================================
-# 11. ENDPOINTS D'ADMINISTRATION & HEALTH CHECK
+# 12. ENDPOINTS D'ADMINISTRATION & HEALTH CHECK
 # ==============================================================================
 
 @app.get("/api/admin/users", response_model=List[UserResponse])
@@ -786,6 +998,6 @@ def health_check():
     return {
         "status": "online",
         "service": "InnovNow NLP Analytics API",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "timestamp": datetime.utcnow()
     }

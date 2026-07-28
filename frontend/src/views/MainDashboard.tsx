@@ -11,7 +11,7 @@ import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis
 export default function MainDashboard() {
   const { currentText, setCurrentText, analyzeText, isAnalyzing, analysisResult } = useAppStore();
   const { isAuthenticated, openAuthModal, token } = useAuthStore();
-  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'csv' | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
 
   const handleAnalyze = () => {
     if (!isAuthenticated) {
@@ -66,7 +66,7 @@ export default function MainDashboard() {
     count: entityCounts[key],
   }));
 
-  // 3. Détection Multilingue & WordCloud (Pilier 3)
+  // 3. Détection Multilingue & WordCloud
   const detectedLanguage = (analysisResult as any)?.language || 'FR';
   const wordCloudData = (analysisResult as any)?.word_cloud || [];
 
@@ -79,8 +79,8 @@ export default function MainDashboard() {
     }
   };
 
-  // Action d'Exportation PDF/CSV
-  const handleExport = async (format: 'pdf' | 'csv') => {
+  // 💡 EXPORT CSV 100% LOCAL (COPIE CONFORME DE LA LOGIQUE DE BatchAnalysis.tsx)
+  const exportToCSV = () => {
     if (!isAuthenticated) {
       openAuthModal();
       return;
@@ -88,18 +88,50 @@ export default function MainDashboard() {
 
     if (!analysisResult) return;
 
-    setDownloadingFormat(format);
+    // Structure à séparateur point-virgule (;) pour Excel
+    const headers = "Texte;Sentiment;Score;Entités Détectées\n";
 
+    const textVal = currentText || (analysisResult as any).summary || "";
+    const cleanText = textVal.replace(/"/g, '""').replace(/\r?\n|\r/g, ' ');
+
+    const ents = (analysisResult.entities || []).map((e: any) => e.text || e.word || '').filter(Boolean).join(' | ');
+    const entText = ents ? ents : "Aucune";
+
+    const row = `"${cleanText}";${sentimentLabel};${rawConfidence}%;"${entText}"`;
+
+    // Création du Blob mémoire avec BOM UTF-8 (\ufeff)
+    const blob = new Blob(["\ufeff" + headers + row], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `rapport_nlp_dashboard_${Date.now()}.csv`);
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // 💡 EXPORT PDF BACKEND (ReportLab)
+  const exportToPDF = async () => {
+    if (!isAuthenticated) {
+      openAuthModal();
+      return;
+    }
+
+    if (!analysisResult) return;
+
+    setDownloadingPdf(true);
     try {
-      const endpoint = format === 'pdf' ? '/api/export/pdf' : '/api/export/csv';
-      const res = await fetch(`http://localhost:8000${endpoint}`, {
+      const userToken = token || localStorage.getItem('token');
+      const res = await fetch('http://127.0.0.1:8000/api/export/pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${userToken}`,
         },
         body: JSON.stringify({
-          text: currentText,
+          text: currentText || (analysisResult as any)?.text || "",
           sentiment: rawSentiment,
           confidence: rawConfidence / 100,
           summary: analysisResult.summary || currentText,
@@ -108,21 +140,23 @@ export default function MainDashboard() {
         }),
       });
 
-      if (!res.ok) throw new Error(`Échec de l'exportation ${format.toUpperCase()}`);
+      if (!res.ok) {
+        throw new Error(`Erreur HTTP ${res.status}`);
+      }
 
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `InnovNow_Audit_${Date.now()}.${format}`;
+      a.setAttribute('href', url);
+      a.setAttribute('download', `Rapport_NLP_InnovNow_${Date.now()}.pdf`);
       document.body.appendChild(a);
       a.click();
-      a.remove();
-    } catch (err) {
-      console.error("Erreur Export:", err);
-      alert(`Impossible de générer le fichier ${format.toUpperCase()}.`);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      console.error("Erreur Export PDF:", err);
+      alert("Impossible de générer le fichier PDF.");
     } finally {
-      setDownloadingFormat(null);
+      setDownloadingPdf(false);
     }
   };
 
@@ -203,20 +237,19 @@ export default function MainDashboard() {
           {analysisResult && (
             <div className="flex items-center gap-2">
               <button
-                onClick={() => handleExport('csv')}
-                disabled={downloadingFormat !== null}
-                className="flex items-center gap-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-4 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer disabled:opacity-50"
+                onClick={exportToCSV}
+                className="flex items-center gap-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-4 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer"
               >
-                {downloadingFormat === 'csv' ? <Loader2 size={15} className="animate-spin" /> : <FileSpreadsheet size={15} />}
+                <FileSpreadsheet size={15} />
                 <span>Exporter CSV</span>
               </button>
 
               <button
-                onClick={() => handleExport('pdf')}
-                disabled={downloadingFormat !== null}
+                onClick={exportToPDF}
+                disabled={downloadingPdf}
                 className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-500/20 transition-all cursor-pointer disabled:opacity-50"
               >
-                {downloadingFormat === 'pdf' ? <Loader2 size={15} className="animate-spin" /> : <FileDown size={15} />}
+                {downloadingPdf ? <Loader2 size={15} className="animate-spin" /> : <FileDown size={15} />}
                 <span>Rapport PDF Exécutif</span>
               </button>
             </div>
@@ -272,7 +305,7 @@ export default function MainDashboard() {
           </div>
         </div>
 
-        {/* WORDCLOUD INTERACTIF (PILIER 3) */}
+        {/* WORDCLOUD INTERACTIF */}
         {wordCloudData.length > 0 && (
           <WordCloud 
             words={wordCloudData} 
