@@ -2,8 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
 import { useAppStore } from '../store/useAppStore';
 import { 
-  Search, Filter, Calendar, Sparkles, Clock, ShieldCheck, 
-  FileDown, RefreshCw, BarChart3, SlidersHorizontal, ArrowUpDown, MessageSquare 
+  Search, Calendar, Sparkles, Clock, ShieldCheck, 
+  FileDown, RefreshCw, BarChart3, SlidersHorizontal, ArrowUpDown
 } from 'lucide-react';
 
 interface HistoryItem {
@@ -17,7 +17,12 @@ interface HistoryItem {
 
 export default function HistoryView() {
   const { token, isAuthenticated, openAuthModal } = useAuthStore();
-  const { setCurrentText, analyzeText } = useAppStore();
+  
+  // Utilisation du Store centralisé pour gérer le texte et la navigation
+  const appStore = useAppStore() as any;
+  const setCurrentText = appStore.setCurrentText;
+  const analyzeText = appStore.analyzeText;
+  const setActiveTab = appStore.setActiveTab || appStore.setCurrentTab;
 
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -105,10 +110,28 @@ export default function HistoryView() {
     }
   };
 
-  // Recharger le texte dans le Dashboard principal pour ré-analyse
+  // Recharger le texte dans le Dashboard principal pour ré-analyse + Redirection automatique
   const handleReloadToDashboard = (text: string) => {
-    setCurrentText(text);
-    analyzeText(text);
+    // 1. Sauvegarder dans le localStorage pour sécurité
+    localStorage.setItem('reanalyze_text', text);
+
+    // 2. Mettre à jour le texte dans le store
+    if (typeof setCurrentText === 'function') {
+      setCurrentText(text);
+    }
+
+    // 3. Lancer l'analyse si disponible
+    if (typeof analyzeText === 'function') {
+      analyzeText(text);
+    }
+
+    // 4. Rediriger l'utilisateur vers le Dashboard
+    if (typeof setActiveTab === 'function') {
+      setActiveTab('dashboard');
+    } else {
+      // Événement personnalisé au cas où le système d'onglets est basé sur un State parent
+      window.dispatchEvent(new CustomEvent('change_tab', { detail: 'dashboard' }));
+    }
   };
 
   if (!isAuthenticated) {
@@ -307,10 +330,10 @@ export default function HistoryView() {
                 <div className="flex items-center gap-2 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 dark:border-slate-800">
                   <button
                     onClick={() => handleReloadToDashboard(item.text_content)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
-                    title="Charger dans le Dashboard principal"
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 text-xs font-bold text-indigo-600 dark:text-indigo-300 transition-all cursor-pointer"
+                    title="Charger et ré-analyser dans le Dashboard"
                   >
-                    <MessageSquare size={14} />
+                    <RefreshCw size={14} />
                     <span>Ré-analyser</span>
                   </button>
 

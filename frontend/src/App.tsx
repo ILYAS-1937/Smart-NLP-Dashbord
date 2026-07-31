@@ -1,30 +1,29 @@
 import { useEffect } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { useAuthStore } from './store/useAuthStore';
-import { LayoutDashboard, FileText, History, Settings, Sun, Moon, LogIn, LogOut } from 'lucide-react';
+import { LayoutDashboard, FileText, History, Settings, Sun, Moon, LogIn, LogOut, Bot } from 'lucide-react';
 import MainDashboard from './views/MainDashboard';
 import BatchAnalysis from './views/BatchAnalysis';
 import HistoryView from './views/HistoryView';
 import AdminConfig from './views/AdminConfig';
+import RagView from './views/RagView';
 import { AuthModal } from './components/AuthModal';
 
 export default function App() {
   const { activeTab, setActiveTab, darkMode, toggleDarkMode } = useAppStore();
   
-  // Utilisation des états et actions globales du store
   const { user, isAuthenticated, isAdmin, logout, isAuthModalOpen, openAuthModal, closeAuthModal } = useAuthStore();
 
-  // Redirection automatique vers le Dashboard si l'onglet 'admin' est actif sans privilèges Admin
   useEffect(() => {
     if (activeTab === 'admin' && !isAdmin) {
       setActiveTab('dashboard');
     }
   }, [isAdmin, activeTab, setActiveTab]);
 
-  // Menu dynamique : Masque l'onglet "Configuration Admin" sauf pour le rôle ADMIN
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'files', label: 'Analyse de Fichiers', icon: FileText },
+    { id: 'rag', label: 'Ask Your Document', icon: Bot },
     { id: 'history', label: 'Historique', icon: History },
     ...(isAdmin ? [{ id: 'admin', label: 'Configuration Admin', icon: Settings }] : []),
   ];
@@ -126,6 +125,7 @@ export default function App() {
         <div className="mx-auto max-w-7xl">
           {activeTab === 'dashboard' && <MainDashboard />}
           {activeTab === 'files' && <BatchAnalysis />}
+          {activeTab === 'rag' && <RagView />}
           {activeTab === 'history' && <HistoryView />}
           {activeTab === 'admin' && isAdmin && <AdminConfig />}
         </div>

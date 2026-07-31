@@ -9,6 +9,9 @@ from typing import List, Optional, Dict
 from datetime import datetime, date
 from collections import Counter
 
+from dotenv import load_dotenv
+load_dotenv()  # Charge automatiquement les variables du fichier .env
+
 from fastapi import (
     FastAPI, Depends, HTTPException, status, Query,
     WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, File
@@ -19,6 +22,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 from pydantic import BaseModel, EmailStr
+
+# Support de lecture PDF pour le Module RAG
+try:
+    from pypdf import PdfReader
+    HAS_PYPDF = True
+except ImportError:
+    HAS_PYPDF = False
+
+# Support du Client Groq LLM (Llama 3.1)
+try:
+    from groq import Groq
+    HAS_GROQ = True
+except ImportError:
+    HAS_GROQ = False
 
 # Imports ReportLab (PDF Engine)
 from reportlab.lib.pagesizes import letter
@@ -45,7 +62,6 @@ from app import models, database, security
 UNICODE_FONT = "Helvetica"
 UNICODE_FONT_BOLD = "Helvetica-Bold"
 
-# Détection et enregistrement d'une police TrueType système compatible Unicode
 possible_fonts = [
     ("CustomUnicode", "C:\\Windows\\Fonts\\arial.ttf"),
     ("CustomUnicode", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
@@ -70,9 +86,7 @@ def process_text_for_pdf(text: str) -> str:
         return ""
     if re.search(r'[\u0600-\u06FF]', text):
         if HAS_ARABIC_LIB:
-            # 1. Attachement contextuel des lettres arabes
             reshaped = arabic_reshaper.reshape(text)
-            # 2. Réordonnancement BIDI (Right-To-Left -> Left-To-Right canvas)
             return get_display(reshaped)
     return text
 
@@ -115,8 +129,8 @@ seed_default_users()
 # ==============================================================================
 app = FastAPI(
     title="InnovNow NLP Analytics API",
-    version="4.0.0",
-    description="Moteur NLP d'analyse décisionnelle B.I., Multilingue & Traitement Asynchrone en Masse"
+    version="5.0.0",
+    description="Moteur NLP B.I. & IA Générative RAG (Ask Your Document)"
 )
 
 app.add_middleware(
@@ -128,6 +142,13 @@ app.add_middleware(
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login", auto_error=False)
+
+# Stockage temporaire en mémoire pour le document RAG actif (Pilier 5)
+CURRENT_RAG_DOCUMENT: Dict[str, any] = {
+    "filename": "",
+    "full_text": "",
+    "chunks": [],
+}
 
 # ==============================================================================
 # 4. SCHÉMAS PYDANTIC
@@ -193,6 +214,18 @@ class ExportRequest(BaseModel):
     confidence: float
     summary: str
     entities: List[EntityItem]
+    execution_time_ms: float
+
+# SCHÉMAS PILIER 5 (RAG)
+class RagQueryRequest(BaseModel):
+    question: str
+    top_k: Optional[int] = 3
+
+class RagQueryResponse(BaseModel):
+    question: str
+    answer: str
+    sources: List[str]
+    used_llm: bool
     execution_time_ms: float
 
 # ==============================================================================
@@ -321,19 +354,118 @@ neg_words = [
 ]
 
 def extract_dynamic_entities(text: str) -> List[EntityItem]:
-    """Analyseur NER multilingue haute précision (AR, FR, EN)."""
+    """Analyseur NER multilingue entreprise ultra-robuste (AR, FR, EN) sans faux positifs."""
     entities = []
     seen = set()
 
     def add_entity(entity_text: str, entity_type: str):
-        entity_text = entity_text.strip(" ,;:\".'()[]{}")
-        if entity_text and entity_text not in seen and len(entity_text) > 1:
+        # Nettoyage rigoureux des guillemets, parenthèses et ponctuation
+        entity_text = entity_text.strip(" ,;:\".'()[]{}«»\t\n\r")
+        
+        # Supprimer les articles initiaux accidentels
+        if entity_type == "PER":
+            entity_text = re.sub(r'^(?:Le|La|Les|L\'|Un|Une|The|A|An)\s+', '', entity_text, flags=re.IGNORECASE)
+            
+        entity_text = entity_text.strip(" ,;:\".'()[]{}«»\t\n\r")
+        
+        if entity_text and entity_text.lower() not in seen and len(entity_text) > 1:
             entities.append(EntityItem(text=entity_text, type=entity_type))
-            seen.add(entity_text)
+            seen.add(entity_text.lower())
 
-    # --------------------------------------------------------------------------
-    # A. DÉTECTION EN ARABE
-    # --------------------------------------------------------------------------
+    # Dictionnaires de filtres pour éliminer les fonctions, titres et mots courants
+    PER_ROLE_TITLES = {
+        "directeur", "directrice", "professeur", "prof", "docteur", "dr", "monsieur", "m", "m.",
+        "madame", "mme", "président", "présidente", "manager", "chef", "lead", "architecte",
+        "ingénieur", "ingénieure", "consultant", "analyste", "développeur", "fondateur", "ciso",
+        "ceo", "cto", "cfo", "coo", "officer", "executive", "head", "senior", "junior", "expert",
+        "ministre", "gouverneur", "ambassadeur", "président-directeur", "p-dg", "pdg"
+    }
+
+    COMMON_NO_PER_WORDS = {
+        "partenariat", "projet", "rapport", "audit", "intervention", "service", "client",
+        "équipe", "équipes", "société", "entreprise", "contrat", "système", "solution",
+        "module", "plateforme", "réussite", "succès", "performance", "déploiement",
+        "installation", "infrastructure", "technologie", "gestion", "analyse", "données",
+        "bureau", "siège", "filiale", "groupe", "accord", "convention", "programme",
+        "the", "this", "that", "these", "those", "from", "with", "about", "your", "our",
+        "le", "la", "les", "un", "une", "des", "ce", "cette", "ces", "mon", "son", "sa",
+        "nos", "vos", "leur", "leurs", "dans", "pour", "avec", "sur", "chez", "vers"
+    }
+
+    # =========================================================================
+    # 1. LATIN - ORGANISATIONS (ORG)
+    # =========================================================================
+    known_orgs = [
+        "Capgemini", "Microsoft", "Google", "Apple", "Novatech", "Amazon", 
+        "Orange", "Tesla", "Meta", "Atos", "Accenture", "CGI", "Deloitte", "KPMG", "IBM", "Oracle",
+        "Attijariwafa Bank", "Banque Populaire", "Barclays", "Siemens", "Philips", "General Electric",
+        "Medtronic", "DHL", "FedEx", "Aramex", "Jumia", "InnovNow", "InnovNow Consulting"
+    ]
+    for org in known_orgs:
+        if re.search(r'\b' + re.escape(org) + r'\b', text, re.IGNORECASE):
+            add_entity(org, "ORG")
+
+    # Entreprises introduites par des mots-clés (ex: "société X", "groupe Y")
+    org_matches = re.finditer(
+        r"\b(?:chez|start\-up|société|entreprise|firme|company|corp|inc|vendor|groupe|banque)\s+([A-Z][a-zA-Z0-9\-]+(?:\s+[A-Z][a-zA-Z0-9\-]+)?)\b",
+        text, flags=re.IGNORECASE
+    )
+    for m in org_matches:
+        candidate = m.group(1).strip()
+        words = candidate.lower().split()
+        if not any(w in COMMON_NO_PER_WORDS or w in PER_ROLE_TITLES for w in words):
+            add_entity(candidate, "ORG")
+
+    # =========================================================================
+    # 2. LATIN - LIEUX (LOC)
+    # =========================================================================
+    known_locs = [
+        "Tour Eiffel", "Champs-Élysées", "Notre-Dame", "Gare de Lyon", "Gare du Nord", 
+        "Big Ben", "Heathrow Airport", "JFK Airport", "New York", "London", "Paris", 
+        "Casablanca", "Rabat", "Marrakech", "Fès", "Tanger", "Agadir", "Meknès", "Oujda",
+        "Tokyo", "Berlin", "Madrid", "Boston", "Seattle"
+    ]
+    for loc in known_locs:
+        if re.search(r'\b' + re.escape(loc) + r'\b', text, re.IGNORECASE):
+            add_entity(loc, "LOC")
+
+    hotels = re.findall(r"\b(?:hôtel|hotel)\s+([A-Z][a-zA-Z0-9\-]+)\b", text, re.IGNORECASE)
+    for h in hotels:
+        add_entity(f"Hôtel {h}", "LOC")
+
+    # =========================================================================
+    # 3. LATIN - PERSONNES (PER)
+    # =========================================================================
+    # A. Noms explicites prioritaires
+    known_people_list = ["Soulaimane Tarzi", "Ilyas Tarzi", "Soulaimane", "Ilyas", "Moataz", "Tarzi", "Mohammed"]
+    for p in known_people_list:
+        if re.search(r'\b' + re.escape(p) + r'\b', text, re.IGNORECASE):
+            add_entity(p, "PER")
+
+    # B. Personnes précédées de titres (ex: "M. Ilyas Tarzi", "Directeur Soulaimane Tarzi")
+    title_pattern = r"\b(?:Le\s+|La\s+)?(?:Directeur|Directrice|Professeur|Prof|Docteur|Dr|Monsieur|M\.|Madame|Mme|Président|Manager|Lead\s+Architecte|Ingénieur|Chef|CISO|CEO|CTO)\s+(?:M\.|Mme|Dr)?\s*([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+)?)\b"
+    title_matches = re.finditer(title_pattern, text, flags=re.IGNORECASE)
+    for tm in title_matches:
+        p_candidate = tm.group(1).strip()
+        words = p_candidate.lower().split()
+        if not any(w in PER_ROLE_TITLES or w in COMMON_NO_PER_WORDS for w in words):
+            add_entity(p_candidate, "PER")
+
+    # C. Noms composés majuscules (Prénom Nom) après purge des titres de civilité
+    clean_text_per = text
+    for t in ["Lead Architecte", "Directeur General", "Directeur", "Directrice", "Professeur", "Docteur", "Monsieur", "Madame", "Président", "Manager", "CISO", "CEO", "CTO", "Chef de Projet"]:
+        clean_text_per = re.sub(r'\b' + re.escape(t) + r'\b', '', clean_text_per, flags=re.IGNORECASE)
+
+    raw_names = re.findall(r"\b([A-Z][a-zA-Z\-]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", clean_text_per)
+    for rn in raw_names:
+        rn_clean = rn.strip()
+        words = rn_clean.lower().split()
+        if not any(w in PER_ROLE_TITLES or w in COMMON_NO_PER_WORDS for w in words):
+            add_entity(rn_clean, "PER")
+
+    # =========================================================================
+    # 4. ARABE (Exécuté indépendamment pour supporter les textes mixtes)
+    # =========================================================================
     if re.search(r'[\u0600-\u06FF]', text):
         ar_cities = ["الدار البيضاء", "الرباط", "مراكش", "فاس", "طنجة", "أكادير", "مكناس", "وجدة", "باريس", "لندن"]
         for city in ar_cities:
@@ -342,10 +474,10 @@ def extract_dynamic_entities(text: str) -> List[EntityItem]:
 
         found_cities = re.findall(r"(?:بمدينة|مدينة)\s+([\u0600-\u06FF]+)", text)
         for c in found_cities:
-            if c not in ["خطوة", "جديدة", "كبيرة", "استثنائية"]:
+            if c not in ["خطوة", "جديدة", "كبيرة", "استثنائية", "مشروع"]:
                 add_entity(c, "LOC")
 
-        found_people = re.findall(r"(?:السيد|السيدة|الدكتور|المهندس|الأستاذ)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+)?)", text)
+        found_people = re.findall(r"(?:السيد|السيدة|الدكتور|المهندس|الأستاذ|المدير)\s+(?:السيد|السيدة|الدكتور|المهندس|الأستاذ|المدير)?\s*([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+)?)", text)
         for p in found_people:
             add_entity(p, "PER")
 
@@ -353,84 +485,38 @@ def extract_dynamic_entities(text: str) -> List[EntityItem]:
         for o in found_orgs:
             add_entity(o, "ORG")
 
-    # --------------------------------------------------------------------------
-    # B. DÉTECTION EN LATIN (FRANÇAIS & ANGLAIS)
-    # --------------------------------------------------------------------------
-    else:
-        # 1. Entreprises / Organisations (ORG)
-        known_orgs = [
-            "Capgemini", "Microsoft", "Google", "Apple", "Novatech", "Amazon", 
-            "Orange", "Tesla", "Meta", "Atos", "Accenture", "CGI", "Deloitte", "KPMG", "IBM", "Oracle",
-            "Attijariwafa Bank", "Banque Populaire", "Barclays", "Siemens", "Philips", "General Electric", "Medtronic", "DHL", "FedEx", "Aramex", "Jumia"
-        ]
-        for org in known_orgs:
-            if re.search(r'\b' + re.escape(org) + r'\b', text, re.IGNORECASE):
-                add_entity(org, "ORG")
+    # =========================================================================
+    # 5. DÉDOUBLONNAGE ET FILTRAGE DES SOUS-CHAÎNES
+    # =========================================================================
+    final_entities = []
+    # Trier par longueur de texte décroissante (les noms complets d'abord)
+    sorted_entities = sorted(entities, key=lambda x: len(x.text), reverse=True)
 
-        # 2. Lieux & Monuments (LOC)
-        known_locs = [
-            "Tour Eiffel", "Champs-Élysées", "Notre-Dame", "Gare de Lyon", "Gare du Nord", 
-            "Big Ben", "Heathrow Airport", "JFK Airport", "New York", "London", "Paris", 
-            "Casablanca", "Rabat", "Tokyo", "Berlin", "Madrid", "Boston", "Seattle"
-        ]
-        for loc in known_locs:
-            if re.search(r'\b' + re.escape(loc) + r'\b', text, re.IGNORECASE):
-                add_entity(loc, "LOC")
-
-        hotels = re.findall(r"\b(?:hôtel|hotel)\s+([A-Z][a-zA-Z0-9]+)\b", text, re.IGNORECASE)
-        for h in hotels:
-            add_entity(f"Hôtel {h}", "LOC")
-
-        matches = re.finditer(
-            r"\b(?:chez|start\-up|société|entreprise|firme|company|corp|inc|vendor|with|équipes de|équipe de)\s+([A-Z][a-zA-Z0-9]+)\b",
-            text,
-            flags=re.IGNORECASE
-        )
-        blacklist_words = ["this", "for", "the", "a", "an", "in", "on", "at", "our", "your", "future", "vendor", "with"]
-        for m in matches:
-            org_candidate = m.group(1)
-            if org_candidate[0].isupper() and org_candidate.lower() not in blacklist_words:
-                add_entity(org_candidate, "ORG")
-
-        # 3. Personnes précédées d'un Titre/Civilité (PER) -> ex: "M. Soulaimane", "Directeur Soulaimane"
-        title_people = re.findall(
-            r"\b(?:Le\s+|La\s+)?(?:Directeur|Directrice|Professeur|Prof|Docteur|Dr|Monsieur|M\.|Madame|Mme|Président|Manager)\s+([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+)?)\b", 
-            text, 
-            flags=re.IGNORECASE
-        )
-        for p in title_people:
-            p_clean = p.strip()
-            if p_clean not in seen and p_clean not in known_orgs and p_clean not in known_locs:
-                add_entity(p_clean, "PER")
-
-        # 4. Prénoms / Noms explicites (PER)
-        known_people_list = ["Soulaimane", "Ilyas", "Moataz", "Tarzi", "Mohammed"]
-        for p in known_people_list:
-            if re.search(r'\b' + re.escape(p) + r'\b', text, re.IGNORECASE):
-                add_entity(p, "PER")
-
-        # 5. Noms composés (Prénom + Nom)
-        titles_pattern = r"\b(?:Le\s+|La\s+)?(?:Directeur|Directrice|Professeur|Prof|Docteur|Dr|Monsieur|M\.|Madame|Mme|Président|Manager)\s+"
-        cleaned_text_for_per = re.sub(titles_pattern, "", text, flags=re.IGNORECASE)
-
-        people = re.findall(r"\b([A-Z][a-zA-Z\-]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", cleaned_text_for_per)
+    for candidate in sorted_entities:
+        cand_text_lower = candidate.text.lower()
         
-        excluded_words = ["Airport", "Street", "Avenue", "Boulevard", "New", "York", "San", "North", "South", "Aéroport", "Casablanca", "Paris", "Novatech", "Microsoft", "Tour", "Eiffel"]
-        for p in people:
-            words = p.split()
-            if not any(w in excluded_words for w in words):
-                if p not in seen and not p.startswith(("The ", "La ", "Les ", "Pour ", "Dans ", "En ", "Hôtel ")) and p not in known_locs and p not in known_orgs:
-                    add_entity(p, "PER")
+        # Vérifier si c'est un sous-ensemble d'une entité plus longue déjà acceptée
+        is_substring_of_existing = False
+        for existing in final_entities:
+            exist_text_lower = existing.text.lower()
+            if cand_text_lower != exist_text_lower and cand_text_lower in exist_text_lower:
+                is_substring_of_existing = True
+                break
+                
+        # Vérifier si c'est un mot de fonction isolé resté par erreur
+        is_role_or_bad_word = cand_text_lower in PER_ROLE_TITLES or cand_text_lower in COMMON_NO_PER_WORDS
+        
+        if not is_substring_of_existing and not is_role_or_bad_word:
+            final_entities.append(candidate)
 
-        # 6. Lieux introduits par des prépositions (LOC)
-        locations = re.findall(r"\b(?:à|de|comme|vers|en|in|near|from|to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", text)
-        for loc in locations:
-            if loc not in seen and loc not in ["France", "Europe", "Lumina"] and len(loc) > 2:
-                words = loc.split()
-                if not any(w.lower() in blacklist_words for w in words) and loc not in known_orgs:
-                    add_entity(loc, "LOC")
+    # Reconstituer la liste selon l'ordre d'apparition original
+    res = []
+    for orig in entities:
+        if any(orig.text.lower() == f.text.lower() and orig.type == f.type for f in final_entities):
+            if not any(r.text.lower() == orig.text.lower() for r in res):
+                res.append(orig)
 
-    return entities
+    return res
 
 # ==============================================================================
 # 8. WEBSOCKET MANAGER & TRAITEMENT ASYNCHRONE EN MASSE (PILIER 4)
@@ -459,7 +545,6 @@ ws_manager = ConnectionManager()
 
 @app.websocket("/ws/bulk/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    """Endpoint WebSocket pour le streaming de progression du traitement en masse."""
     await ws_manager.connect(client_id, websocket)
     try:
         while True:
@@ -469,7 +554,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 
 async def process_bulk_file_task(client_id: str, file_bytes: bytes, filename: str, user_id: int):
-    """Tâche de fond exécutant l'analyse NLP ligne par ligne et notifiant via WebSocket."""
     db = database.SessionLocal()
     try:
         content_str = file_bytes.decode('utf-8', errors='ignore')
@@ -593,7 +677,6 @@ async def analyze_bulk_file(
     client_id: str = Query(...),
     current_user: Optional[models.User] = Depends(get_optional_current_user)
 ):
-    """[PILIER 4] Endpoint d'Upload pour lancer l'analyse en masse asynchrone."""
     if not file.filename.endswith(('.csv', '.txt')):
         raise HTTPException(status_code=400, detail="Seuls les fichiers .csv et .txt sont supportés.")
 
@@ -763,7 +846,6 @@ def generate_pdf_report(
     payload: ExportRequest,
     current_user: Optional[models.User] = Depends(get_optional_current_user)
 ):
-    """Génère un Rapport PDF Exécutif compatible RTL / Arabe sans exiger un jeton d'authentification strict."""
     try:
         user_name = current_user.full_name if current_user else "Analyste / Invité"
         user_role = current_user.role if current_user else "ANALYST"
@@ -916,10 +998,8 @@ def export_csv_report(
     current_user: Optional[models.User] = Depends(get_optional_current_user)
 ):
     output = io.StringIO()
-    # Séparateur point-virgule (;) pour Excel FR/MA
     writer = csv.writer(output, delimiter=';', quoting=csv.QUOTE_MINIMAL)
     
-    # En-tête B.I. standardisé identique à l'Analyse en Masse
     writer.writerow([
         "ID", "Langue", "Sentiment", "Score Confiance", 
         "Latence (ms)", "Nombre Entités", "Entités Détectées", 
@@ -945,7 +1025,6 @@ def export_csv_report(
     ])
     
     output.seek(0)
-    # Encodage utf-8-sig (avec BOM UTF-8) pour affichage parfait sous Excel
     return StreamingResponse(
         io.BytesIO(output.getvalue().encode("utf-8-sig")), 
         media_type="text/csv; charset=utf-8", 
@@ -953,7 +1032,161 @@ def export_csv_report(
     )
 
 # ==============================================================================
-# 12. ENDPOINTS D'ADMINISTRATION & HEALTH CHECK
+# 12. MODULE RAG & IA GÉNÉRATIVE « ASK YOUR DOCUMENT » (PILIER 5)
+# ==============================================================================
+
+def chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> List[str]:
+    """Découpe un document long en blocs de texte chevauchants (chunks)."""
+    words = text.split()
+    if not words:
+        return []
+    
+    chunks = []
+    i = 0
+    while i < len(words):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
+        i += (chunk_size - overlap)
+    return chunks
+
+def calculate_similarity_score(query: str, chunk: str) -> float:
+    """Calcule la similarité textuelle basée sur le chevauchement sémantique des mots."""
+    query_words = set(re.findall(r'\w+', query.lower()))
+    chunk_words = set(re.findall(r'\w+', chunk.lower()))
+    
+    if not query_words or not chunk_words:
+        return 0.0
+    
+    intersection = query_words.intersection(chunk_words)
+    return len(intersection) / (len(query_words) ** 0.5 * len(chunk_words) ** 0.5)
+
+
+@app.post("/api/rag/upload")
+async def upload_rag_document(file: UploadFile = File(...)):
+    """Upload un PDF ou TXT, extrait son texte et crée les chunks RAG."""
+    global CURRENT_RAG_DOCUMENT
+    
+    if not file.filename.endswith(('.pdf', '.txt')):
+        raise HTTPException(status_code=400, detail="Seuls les fichiers .pdf et .txt sont acceptés pour le RAG.")
+    
+    content = await file.read()
+    extracted_text = ""
+    
+    try:
+        if file.filename.endswith('.pdf'):
+            if not HAS_PYPDF:
+                raise HTTPException(status_code=500, detail="La bibliothèque pypdf n'est pas installée sur le serveur.")
+            pdf_reader = PdfReader(io.BytesIO(content))
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text:
+                    extracted_text += text + "\n"
+        else:
+            extracted_text = content.decode('utf-8', errors='ignore')
+            
+        if not extracted_text.strip():
+            raise HTTPException(status_code=400, detail="Le document ne contient aucun texte extractible.")
+        
+        chunks = chunk_text(extracted_text, chunk_size=400, overlap=80)
+        
+        CURRENT_RAG_DOCUMENT = {
+            "filename": file.filename,
+            "full_text": extracted_text,
+            "chunks": chunks
+        }
+        
+        return {
+            "status": "SUCCESS",
+            "filename": file.filename,
+            "total_chunks": len(chunks),
+            "character_count": len(extracted_text),
+            "message": f"Document '{file.filename}' indexé avec succès ({len(chunks)} blocs)."
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'indexation RAG : {str(e)}")
+
+
+@app.post("/api/rag/query", response_model=RagQueryResponse)
+def query_rag_document(payload: RagQueryRequest):
+    """Recherche vectorielle et génération de réponse fluide via Groq LLM (Llama 3.1)."""
+    start_time = time.time()
+    
+    if not CURRENT_RAG_DOCUMENT.get("chunks"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Aucun document n'a été téléversé. Veuillez d'abord charger un fichier PDF ou TXT."
+        )
+    
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="La question ne peut pas être vide.")
+    
+    chunks = CURRENT_RAG_DOCUMENT["chunks"]
+    
+    # 1. Recherche des k blocs les plus pertinents
+    scored_chunks = []
+    for chunk in chunks:
+        score = calculate_similarity_score(question, chunk)
+        scored_chunks.append((score, chunk))
+    
+    scored_chunks.sort(key=lambda x: x[0], reverse=True)
+    top_sources = [chunk for score, chunk in scored_chunks[:payload.top_k] if score > 0.05]
+    
+    if not top_sources:
+        top_sources = chunks[:payload.top_k]
+    
+    context = "\n\n---\n\n".join(top_sources)
+    used_llm = False
+    answer = ""
+
+    # 2. Récupération dynamique de la clé Groq depuis .env ou l'environnement
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+
+    if api_key:
+        try:
+            from groq import Groq
+            client = Groq(api_key=api_key)
+            
+            prompt = f"""Tu es un assistant IA professionnel d'analyse décisionnelle B.I.
+Réponds de manière claire, synthétique, concise et structurée à la question de l'utilisateur en t'appuyant uniquement sur le contexte ci-dessous.
+Extrais les chiffres, noms, dates et montants exacts.
+
+CONTEXTE DU DOCUMENT ({CURRENT_RAG_DOCUMENT['filename']}):
+{context}
+
+QUESTION:
+{question}
+
+RÉPONSE DÉTAILLÉE :"""
+
+            chat_completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.2,
+                max_tokens=500,
+            )
+            answer = chat_completion.choices[0].message.content
+            used_llm = True
+        except Exception as e:
+            print(f"❌ ERREUR API GROQ: {e}")
+            answer = f"⚠️ <b>Erreur d'appel API Groq :</b> {str(e)}<br/><br/><b>Extraits du document :</b><br/>" + "<br/>".join([f"• {s}" for s in top_sources])
+    else:
+        print("⚠️ CLÉ GROQ_API_KEY NON TROUVÉE DANS L'ENVIRONNEMENT !")
+        answer = f"⚠️ <b>Clé GROQ_API_KEY manquante !</b> Ajoutez votre clé dans le fichier backend/.env pour activer l'IA Llama 3.1.<br/><br/><b>Extraits du document :</b><br/>" + "<br/>".join([f"• {s}" for s in top_sources])
+
+    exec_time = round((time.time() - start_time) * 1000, 2)
+    
+    return RagQueryResponse(
+        question=question,
+        answer=answer,
+        sources=top_sources,
+        used_llm=used_llm,
+        execution_time_ms=exec_time
+    )
+
+# ==============================================================================
+# 13. ENDPOINTS D'ADMINISTRATION & HEALTH CHECK
 # ==============================================================================
 
 @app.get("/api/admin/users", response_model=List[UserResponse])
@@ -998,6 +1231,6 @@ def health_check():
     return {
         "status": "online",
         "service": "InnovNow NLP Analytics API",
-        "version": "4.0.0",
+        "version": "5.0.0",
         "timestamp": datetime.utcnow()
     }

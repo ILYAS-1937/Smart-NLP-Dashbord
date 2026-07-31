@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { WordCloud } from '../components/WordCloud';
@@ -12,6 +12,16 @@ export default function MainDashboard() {
   const { currentText, setCurrentText, analyzeText, isAnalyzing, analysisResult } = useAppStore();
   const { isAuthenticated, openAuthModal, token } = useAuthStore();
   const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
+
+  // 🔄 Écouteur de ré-analyse venant de la page Historique
+  useEffect(() => {
+    const savedText = localStorage.getItem('reanalyze_text');
+    if (savedText) {
+      setCurrentText(savedText);
+      analyzeText(savedText);
+      localStorage.removeItem('reanalyze_text'); // Nettoyage après récupération
+    }
+  }, [setCurrentText, analyzeText]);
 
   const handleAnalyze = () => {
     if (!isAuthenticated) {
@@ -79,7 +89,7 @@ export default function MainDashboard() {
     }
   };
 
-  // 💡 EXPORT CSV 100% LOCAL (COPIE CONFORME DE LA LOGIQUE DE BatchAnalysis.tsx)
+  // 💡 EXPORT CSV 100% LOCAL
   const exportToCSV = () => {
     if (!isAuthenticated) {
       openAuthModal();
@@ -88,7 +98,6 @@ export default function MainDashboard() {
 
     if (!analysisResult) return;
 
-    // Structure à séparateur point-virgule (;) pour Excel
     const headers = "Texte;Sentiment;Score;Entités Détectées\n";
 
     const textVal = currentText || (analysisResult as any).summary || "";
@@ -99,7 +108,6 @@ export default function MainDashboard() {
 
     const row = `"${cleanText}";${sentimentLabel};${rawConfidence}%;"${entText}"`;
 
-    // Création du Blob mémoire avec BOM UTF-8 (\ufeff)
     const blob = new Blob(["\ufeff" + headers + row], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
 
