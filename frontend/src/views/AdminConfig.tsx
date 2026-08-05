@@ -4,7 +4,7 @@ import {
   ShieldAlert, UserPlus, Users, Activity, Database, 
   CheckCircle2, AlertCircle, Loader2, KeyRound, ShieldCheck, 
   Trash2, Sliders, FileText, Server, ToggleLeft, ToggleRight,
-  RefreshCw, UserX, AlertTriangle, X
+  RefreshCw, UserX, AlertTriangle, X, Search
 } from 'lucide-react';
 
 interface UserItem {
@@ -44,6 +44,9 @@ export default function AdminConfig() {
   const [globalLogs, setGlobalLogs] = useState<GlobalLogItem[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [logFilter, setLogFilter] = useState<'ALL' | 'POSITIVE' | 'NEGATIVE'>('ALL');
+  
+  // 🔍 NOUVEL ÉTAT : Barre de recherche collaborateur / mot-clé
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Paramètres Moteur NLP
   const [confidenceThreshold, setConfidenceThreshold] = useState(70);
@@ -76,7 +79,7 @@ export default function AdminConfig() {
     }
   };
 
-  // Charger le journal d'audit global
+  // Charger le journal d'audit global BDD
   const fetchGlobalLogs = async () => {
     if (!token || !isAdmin) return;
     setLoadingLogs(true);
@@ -171,10 +174,23 @@ export default function AdminConfig() {
     }
   };
 
+  // 🔍 FILTRE COMBINÉ : Sentiment + Recherche Collaborateur (Nom, Email, Texte)
   const filteredLogs = globalLogs.filter(log => {
-    if (logFilter === 'POSITIVE') return log.sentiment === 'POSITIVE';
-    if (logFilter === 'NEGATIVE') return log.sentiment === 'NEGATIVE';
-    return true;
+    const s = (log.sentiment || '').toUpperCase();
+    let matchesSentiment = true;
+    if (logFilter === 'POSITIVE') matchesSentiment = (s === 'POSITIVE' || s === 'POSITIF');
+    if (logFilter === 'NEGATIVE') matchesSentiment = (s === 'NEGATIVE' || s === 'NÉGATIF' || s === 'NEGATIF');
+
+    const q = searchQuery.toLowerCase().trim();
+    let matchesSearch = true;
+    if (q) {
+      const userName = (log.user_name || '').toLowerCase();
+      const userEmail = (log.user_email || '').toLowerCase();
+      const text = (log.text || '').toLowerCase();
+      matchesSearch = userName.includes(q) || userEmail.includes(q) || text.includes(q);
+    }
+
+    return matchesSentiment && matchesSearch;
   });
 
   // 🔴 ÉCRAN DE SÉCURITÉ NON-ADMIN
@@ -225,7 +241,7 @@ export default function AdminConfig() {
         <div className="relative z-10 max-w-2xl space-y-3">
           <div className="inline-flex items-center gap-2 rounded-full bg-rose-500/20 px-3.5 py-1 text-xs font-extrabold text-rose-300 border border-rose-400/20 uppercase tracking-wider backdrop-blur-md">
             <ShieldCheck size={14} className="text-rose-400" />
-            <span>Gouvernance RBAC & Supervision System</span>
+            <span>Gouvernance & Supervision System</span>
           </div>
           <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-white">
             Configuration Administrateur
@@ -496,17 +512,39 @@ export default function AdminConfig() {
       )}
 
       {/* ==================================================================== */}
-      {/* 🟢 ONGLET 2 : SUPERVISION ET AUDIT GLOBAL */}
+      {/* 🟢 ONGLET 2 : SUPERVISION ET AUDIT GLOBAL AVEC BARRE DE RECHERCHE */}
       {/* ==================================================================== */}
       {activeAdminTab === 'logs' && (
         <div className="rounded-3xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div>
               <h3 className="text-sm font-black text-slate-900 dark:text-white">Journal des Analyses Multi-Utilisateurs</h3>
               <p className="text-xs text-slate-400">Traçabilité complète des requêtes transmises au Moteur NLP</p>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* 🔍 BARRE DE RECHERCHE POUR COLLABORATEURS ET EXTRAITS */}
+              <div className="relative min-w-[220px] sm:min-w-[280px]">
+                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Filtrer par Collaborateur (Nom, Email)..."
+                  className="w-full pl-9 pr-8 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-2xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500 font-medium transition-all"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors"
+                    title="Effacer la recherche"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              {/* Boutons de Filtre Sentiment */}
               <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl">
                 <button
                   onClick={() => setLogFilter('ALL')}
@@ -514,7 +552,7 @@ export default function AdminConfig() {
                     logFilter === 'ALL' ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm' : 'text-slate-400'
                   }`}
                 >
-                  Tous ({globalLogs.length})
+                  Tous
                 </button>
                 <button
                   onClick={() => setLogFilter('POSITIVE')}
@@ -534,12 +572,13 @@ export default function AdminConfig() {
                 </button>
               </div>
 
+              {/* Bouton Actualiser */}
               <button
                 onClick={fetchGlobalLogs}
                 className="flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 rounded-xl border border-indigo-200 dark:border-indigo-800/60 hover:bg-indigo-100 transition-colors cursor-pointer"
+                title="Actualiser la liste"
               >
                 <RefreshCw size={14} />
-                <span>Actualiser</span>
               </button>
             </div>
           </div>
@@ -547,6 +586,10 @@ export default function AdminConfig() {
           {loadingLogs ? (
             <div className="flex justify-center py-12">
               <Loader2 size={24} className="animate-spin text-indigo-500" />
+            </div>
+          ) : filteredLogs.length === 0 ? (
+            <div className="text-center py-12 text-xs text-slate-400">
+              {searchQuery ? `Aucune analyse trouvée pour "${searchQuery}".` : "Aucune entrée enregistrée dans le journal d'audit."}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -562,31 +605,38 @@ export default function AdminConfig() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-medium text-slate-700 dark:text-slate-300">
-                  {filteredLogs.map((log) => (
-                    <tr key={log.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="px-4 py-3.5 font-mono text-slate-400">#{log.id}</td>
-                      <td className="px-4 py-3.5 font-bold text-slate-900 dark:text-white">
-                        {log.user_name}
-                        <span className="block text-[10px] font-normal text-slate-400">{log.user_email}</span>
-                      </td>
-                      <td className="px-4 py-3.5 max-w-xs truncate text-slate-600 dark:text-slate-300">{log.text}</td>
-                      <td className="px-4 py-3.5">
-                        <span className={`inline-block px-2.5 py-0.5 rounded-md text-[10px] font-bold ${
-                          log.sentiment === 'POSITIVE' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-400' :
-                          log.sentiment === 'NEGATIVE' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/80 dark:text-rose-400' :
-                          'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-400'
-                        }`}>
-                          {log.sentiment}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3.5 font-bold text-slate-800 dark:text-slate-200">
-                        {Math.round(log.confidence * 100)}%
-                      </td>
-                      <td className="px-4 py-3.5 text-slate-400 text-[11px]">
-                        {new Date(log.created_at).toLocaleString('fr-FR')}
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredLogs.map((log) => {
+                    const normSentiment = (log.sentiment || '').toUpperCase();
+                    const isPos = normSentiment === 'POSITIVE' || normSentiment === 'POSITIF';
+                    const isNeg = normSentiment === 'NEGATIVE' || normSentiment === 'NÉGATIF' || normSentiment === 'NEGATIF';
+                    const confPercent = Math.round(log.confidence <= 1 ? log.confidence * 100 : log.confidence);
+
+                    return (
+                      <tr key={log.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                        <td className="px-4 py-3.5 font-mono text-slate-400">#{log.id}</td>
+                        <td className="px-4 py-3.5 font-bold text-slate-900 dark:text-white">
+                          {log.user_name || 'Anonyme'}
+                          <span className="block text-[10px] font-normal text-slate-400">{log.user_email}</span>
+                        </td>
+                        <td className="px-4 py-3.5 max-w-xs truncate text-slate-600 dark:text-slate-300">{log.text}</td>
+                        <td className="px-4 py-3.5">
+                          <span className={`inline-block px-2.5 py-0.5 rounded-md text-[10px] font-bold ${
+                            isPos ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-400' :
+                            isNeg ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/80 dark:text-rose-400' :
+                            'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-400'
+                          }`}>
+                            {log.sentiment}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3.5 font-bold text-slate-800 dark:text-slate-200">
+                          {confPercent}%
+                        </td>
+                        <td className="px-4 py-3.5 text-slate-400 text-[11px]">
+                          {log.created_at ? new Date(log.created_at).toLocaleString('fr-FR') : 'N/A'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -676,16 +726,14 @@ export default function AdminConfig() {
       )}
 
       {/* ==================================================================== */}
-      {/* 🔴 MODALE PRO DE CONFIRMATION DE RÉVOCATION DE COMPTE (WAAW DESIGN) */}
+      {/* 🔴 MODALE PRO DE CONFIRMATION DE RÉVOCATION DE COMPTE */}
       {/* ==================================================================== */}
       {userToRevoke && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
           <div className="relative w-full max-w-md overflow-hidden bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl transition-all">
             
-            {/* Bandeau de danger rouge */}
             <div className="h-2 w-full bg-gradient-to-r from-rose-500 via-rose-600 to-amber-500" />
 
-            {/* Bouton fermer */}
             <button
               onClick={() => setUserToRevoke(null)}
               className="absolute top-5 right-5 p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white bg-slate-100 dark:bg-slate-800/60 rounded-full transition-colors"
@@ -694,7 +742,6 @@ export default function AdminConfig() {
             </button>
 
             <div className="p-8 text-center">
-              {/* Icône animée */}
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-rose-100 dark:bg-rose-950/80 text-rose-600 dark:text-rose-400 mb-5 border border-rose-200 dark:border-rose-900/60 shadow-lg shadow-rose-500/10">
                 <AlertTriangle size={32} />
               </div>
@@ -707,7 +754,6 @@ export default function AdminConfig() {
                 Vous êtes sur le point de supprimer définitivement le compte et les accès de ce collaborateur :
               </p>
 
-              {/* Badge du compte à supprimer */}
               <div className="my-5 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80 text-left flex items-center justify-between">
                 <div className="overflow-hidden">
                   <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
@@ -730,7 +776,6 @@ export default function AdminConfig() {
                 ⚠️ Cette action est irréversible. L'utilisateur sera immédiatement déconnecté et ne pourra plus accéder à la plateforme.
               </div>
 
-              {/* Boutons d'action */}
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"

@@ -1226,6 +1226,35 @@ def delete_user(user_id: int, db: Session = Depends(database.get_db), admin: mod
     return {"detail": f"Compte de {user_to_delete.full_name} supprimé avec succès."}
 
 
+@app.get("/api/admin/global-logs")
+@app.get("/api/admin/audit-logs")
+def get_admin_global_logs(
+    db: Session = Depends(database.get_db),
+    admin: models.User = Depends(require_admin_role)
+):
+    """Extraction BDD du journal d'audit multi-utilisateurs pour l'Espace Administrateur."""
+    results = (
+        db.query(models.AnalysisHistory, models.User)
+        .join(models.User, models.AnalysisHistory.user_id == models.User.id)
+        .order_by(models.AnalysisHistory.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    
+    return [
+        {
+            "id": history.id,
+            "text": history.text_content,
+            "sentiment": history.sentiment,
+            "confidence": history.confidence_score,
+            "created_at": history.created_at.isoformat() if history.created_at else "",
+            "user_name": user.full_name,
+            "user_email": user.email
+        }
+        for history, user in results
+    ]
+
+
 @app.get("/api/health")
 def health_check():
     return {

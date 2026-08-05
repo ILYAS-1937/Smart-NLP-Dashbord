@@ -197,7 +197,7 @@ const exportToCSV = () => {
         <div className="relative z-10 max-w-xl space-y-2">
           <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/20 px-3.5 py-1 text-xs font-semibold text-indigo-300 border border-indigo-400/20">
             <Layers size={14} className="text-indigo-400" />
-            <span>Traitement par Lot Haute Vélocité (WebSockets)</span>
+            <span>Traitement par Lot Haute Vélocité</span>
           </div>
           <h1 className="text-3xl font-black tracking-tight text-white">Analyse de Fichiers en Masse</h1>
           <p className="text-xs text-indigo-200/80 leading-relaxed">
@@ -219,7 +219,7 @@ const exportToCSV = () => {
           </label>
           <span className="text-sm text-slate-500"> ou glissez-déposez le document ici</span>
         </div>
-        <p className="mt-1 text-xs text-slate-400">Formats acceptés : CSV, TXT (Encodage UTF-8)</p>
+        <p className="mt-1 text-xs text-slate-400">Formats acceptés : CSV, TXT</p>
 
         {selectedFile && (
           <div className="mt-6 inline-flex items-center gap-3 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/60 px-5 py-2.5 border border-indigo-200/50 dark:border-indigo-800/50">

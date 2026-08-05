@@ -178,7 +178,7 @@ export default function MainDashboard() {
         <div className="relative z-10 max-w-2xl space-y-3">
           <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/20 px-3.5 py-1 text-xs font-semibold text-indigo-300 backdrop-blur-md border border-indigo-400/20">
             <Sparkles size={14} className="text-indigo-400" />
-            <span>InnovNow NLP Intelligence Engine V3.0 (B.I. & Multilingue)</span>
+            <span>InnovNow NLP Intelligence Engine (B.I. & Multilingue)</span>
           </div>
           <h1 className="text-3xl font-black tracking-tight text-white sm:text-4xl">
             Analyse Textuelle & Visual Analytics B.I.
