@@ -1263,3 +1263,6 @@ def health_check():
         "version": "5.0.0",
         "timestamp": datetime.utcnow()
     }
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "API InnovNow NLP Analytics est fonctionnelle"}
